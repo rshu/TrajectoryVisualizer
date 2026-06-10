@@ -27,6 +27,8 @@ def main():
     from .app import build_ui
 
     app = build_ui()
+    # Bound concurrent comparison/batch jobs so one run cannot starve others.
+    app.queue(default_concurrency_limit=4)
     app.launch(server_name=args.host, server_port=args.port, share=args.share, auth=auth)
 
 

@@ -38,6 +38,9 @@ def main():
         sys.exit(1)
 
     app = build_ui()
+    # Bound concurrent heavy do_load() calls so one large upload cannot block
+    # or exhaust the server for other users.
+    app.queue(default_concurrency_limit=4)
     app.launch(server_name=args.host, server_port=args.port, share=args.share,
                auth=auth, css=APP_CSS)
 
