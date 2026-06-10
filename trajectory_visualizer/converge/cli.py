@@ -289,8 +289,9 @@ def main() -> None:
             detect_guardrail_regressions, build_intervention_report,
         )
         try:
-            before_entries = parse_manifest(args.before)
-            after_entries = parse_manifest(args.after)
+            # Local CLI is operator-trusted: allow absolute / external paths.
+            before_entries = parse_manifest(args.before, confine=False)
+            after_entries = parse_manifest(args.after, confine=False)
             before_results = run_batch(before_entries, token_rate=args.token_rate,
                                        fuzzy_commands=args.fuzzy_commands)
             after_results = run_batch(after_entries, token_rate=args.token_rate,
@@ -319,7 +320,8 @@ def main() -> None:
             compute_consistency, build_batch_report,
         )
         try:
-            entries = parse_manifest(args.batch)
+            # Local CLI is operator-trusted: allow absolute / external paths.
+            entries = parse_manifest(args.batch, confine=False)
             results = run_batch(
                 entries,
                 token_rate=args.token_rate,

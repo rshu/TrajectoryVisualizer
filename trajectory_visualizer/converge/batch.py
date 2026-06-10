@@ -23,12 +23,20 @@ class ManifestEntry:
     anchor: str | None = None
 
 
-def parse_manifest(manifest_path: str) -> list[ManifestEntry]:
+def parse_manifest(manifest_path: str, *, confine: bool = True) -> list[ManifestEntry]:
     """Parse and validate a batch manifest JSON file.
 
     The manifest is a JSON array of objects with required fields task_id,
     reference, compared, and optional anchor. Paths are resolved relative
     to the manifest file's directory.
+
+    Security: when ``confine`` is True (the default, used for UNTRUSTED manifests
+    such as those uploaded through the web UI), referenced paths must be relative
+    and must stay within the manifest's directory — absolute paths and ``..``
+    escapes are rejected. This prevents a hostile manifest from reading arbitrary
+    files (e.g. ``/etc/passwd``, ``~/.ssh/id_rsa``) into the rendered report.
+    Trusted callers (the local CLI) may pass ``confine=False`` to allow absolute
+    paths to a trajectory store outside the manifest directory.
     """
     with open(manifest_path) as f:
         data = json.load(f)
@@ -50,14 +58,30 @@ def parse_manifest(manifest_path: str) -> list[ManifestEntry]:
                     f"missing required field '{field_name}'"
                 )
 
-        def _resolve(p: str) -> str:
+        def _resolve(p: str, field_label: str) -> str:
+            if not confine:
+                # Trusted (local CLI) mode: legacy behaviour.
+                if os.path.isabs(p):
+                    return p
+                return os.path.normpath(os.path.join(base_dir, p))
+            # Untrusted mode: relative + contained within base_dir only.
             if os.path.isabs(p):
-                return p
-            return os.path.normpath(os.path.join(base_dir, p))
+                raise ValueError(
+                    f"Manifest entry {i} (task_id={item.get('task_id', '?')}): "
+                    f"absolute paths are not allowed for '{field_label}' ({p!r}); "
+                    f"use a path relative to the manifest directory."
+                )
+            resolved = os.path.normpath(os.path.join(base_dir, p))
+            if os.path.commonpath([base_dir, resolved]) != base_dir:
+                raise ValueError(
+                    f"Manifest entry {i} (task_id={item.get('task_id', '?')}): "
+                    f"'{field_label}' path escapes the manifest directory ({p!r})."
+                )
+            return resolved
 
-        ref_path = _resolve(item["reference"])
-        cmp_path = _resolve(item["compared"])
-        anchor_path = _resolve(item["anchor"]) if item.get("anchor") else None
+        ref_path = _resolve(item["reference"], "reference")
+        cmp_path = _resolve(item["compared"], "compared")
+        anchor_path = _resolve(item["anchor"], "anchor") if item.get("anchor") else None
 
         # Validate files exist
         for label, path in [("reference", ref_path), ("compared", cmp_path)]:

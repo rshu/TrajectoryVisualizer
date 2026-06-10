@@ -156,7 +156,8 @@ def build_ui() -> gr.Blocks:
 
             try:
                 manifest_path = manifest_upload.name if hasattr(manifest_upload, "name") else str(manifest_upload)
-                entries = parse_manifest(manifest_path)
+                # Uploaded manifest is untrusted — confine referenced paths.
+                entries = parse_manifest(manifest_path, confine=True)
                 results = run_batch(entries, token_rate=float(rate), fuzzy_commands=bool(fuzzy))
                 aggregate = aggregate_reports(results)
                 frequency = compute_pattern_frequency(results)
@@ -246,8 +247,9 @@ def build_ui() -> gr.Blocks:
                 before_path = before_upload.name if hasattr(before_upload, "name") else str(before_upload)
                 after_path = after_upload.name if hasattr(after_upload, "name") else str(after_upload)
 
-                before_entries = parse_manifest(before_path)
-                after_entries = parse_manifest(after_path)
+                # Uploaded manifests are untrusted — confine referenced paths.
+                before_entries = parse_manifest(before_path, confine=True)
+                after_entries = parse_manifest(after_path, confine=True)
                 before_results = run_batch(before_entries, token_rate=float(rate), fuzzy_commands=bool(fuzzy))
                 after_results = run_batch(after_entries, token_rate=float(rate), fuzzy_commands=bool(fuzzy))
 
