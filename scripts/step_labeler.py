@@ -663,6 +663,25 @@ def main() -> None:
         print("Error: LABEL_MODEL not set (use --model or .env)", file=sys.stderr)
         sys.exit(1)
 
+    # base_url must be an http(s) URL with a host (typo / SSRF guard).
+    from urllib.parse import urlparse
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        print(f"Error: --base-url must be an http(s) URL with a host; got {base_url!r}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Secret hygiene + data-egress notice. Labeling is a NETWORK operation: the
+    # labeler sends trajectory content (assistant text, reasoning, tool I/O,
+    # which can contain proprietary code and secrets) to the configured endpoint.
+    if args.api_key:
+        print("Warning: --api-key on the command line is visible via the process "
+              "list and shell history; prefer LABEL_API_KEY in .env or the "
+              "environment.", file=sys.stderr)
+    print(f"Note: sending trajectory content to {parsed.scheme}://{parsed.netloc} "
+          f"({provider}/{model}). Do not label trajectories containing secrets you "
+          f"cannot share with that endpoint.", file=sys.stderr)
+
     # Output path
     output_path = args.output
     if output_path is None:
