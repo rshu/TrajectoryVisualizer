@@ -3,13 +3,17 @@
 import argparse
 import sys
 
+from .._server import add_server_args, resolve_launch_security
+
 
 def main():
     parser = argparse.ArgumentParser(description="Insight")
-    parser.add_argument("--port", type=int, default=7860, help="Server port (default: 7860)")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host (default: 127.0.0.1). Use 0.0.0.0 to accept connections from any IP.")
-    parser.add_argument("--share", action="store_true", help="Create a public Gradio link")
+    add_server_args(parser)
     args = parser.parse_args()
+
+    # Enforce the auth/exposure policy before importing the (heavy) UI stack so
+    # a misconfigured exposed launch fails fast.
+    auth = resolve_launch_security(args, prog="insight")
 
     try:
         from .insight import build_ui, APP_CSS
@@ -24,7 +28,8 @@ def main():
         sys.exit(1)
 
     app = build_ui()
-    app.launch(server_name=args.host, server_port=args.port, share=args.share, css=APP_CSS)
+    app.launch(server_name=args.host, server_port=args.port, share=args.share,
+               auth=auth, css=APP_CSS)
 
 
 if __name__ == "__main__":
