@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,16 @@ from trajectory_visualizer.insight.parser import parse_steps
 
 FIXTURE = Path(__file__).parent / "fixtures" / "training_conversation_minimal.json"
 TOOL_FIXTURE = Path(__file__).parent / "fixtures" / "training_conversation_with_tools.json"
+
+# Optional regression corpus of real agent samples. Not committed (may contain
+# proprietary content); point at it with TRAJECTORY_TRAINING_SAMPLES. Tests that
+# need it skip cleanly when it is absent (e.g. CI / fresh clones).
+SAMPLES_ROOT = Path(
+    os.environ.get(
+        "TRAJECTORY_TRAINING_SAMPLES",
+        "/Users/lxs/Documents/AI/trajectory-training-samples",
+    )
+)
 
 
 class TrainingConversationTests(unittest.TestCase):
@@ -86,8 +97,12 @@ class TrainingConversationTests(unittest.TestCase):
 
         self.assertEqual(loaded["_training_scaffold"]["id"], "generic_tool_calling")
 
+    @unittest.skipUnless(
+        SAMPLES_ROOT.is_dir(),
+        f"training samples not found at {SAMPLES_ROOT}; set TRAJECTORY_TRAINING_SAMPLES",
+    )
     def test_infers_known_scaffolds_from_real_samples_without_meta_info(self):
-        root = Path("/Users/lxs/Documents/AI/trajectory-training-samples")
+        root = SAMPLES_ROOT
         expectations = {
             "openhands_agent_tools.json": "openhands",
             "claude_agent_sdk_tools.json": "claude_agent_sdk",

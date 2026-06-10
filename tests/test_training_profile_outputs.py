@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,16 @@ from trajectory_visualizer.insight.parser import parse_steps
 
 FIXTURE = Path(__file__).parent / "fixtures" / "training_conversation_minimal.json"
 TOOL_FIXTURE = Path(__file__).parent / "fixtures" / "training_conversation_with_tools.json"
+
+# Optional real-sample regression file; see TRAJECTORY_TRAINING_SAMPLES in
+# test_training_conversation.py. Skips cleanly when the corpus is absent.
+SAMPLES_ROOT = Path(
+    os.environ.get(
+        "TRAJECTORY_TRAINING_SAMPLES",
+        "/Users/lxs/Documents/AI/trajectory-training-samples",
+    )
+)
+REAL_AGENT_SAMPLE = SAMPLES_ROOT / "claude_agent_sdk_tools.json"
 
 
 class TrainingProfileOutputTests(unittest.TestCase):
@@ -36,8 +47,12 @@ class TrainingProfileOutputTests(unittest.TestCase):
         self.assertEqual(out["anomaly_html"], "")
         self.assertIn("reasoning", out["per_message_text"].lower())
 
+    @unittest.skipUnless(
+        REAL_AGENT_SAMPLE.is_file(),
+        f"training sample not found at {REAL_AGENT_SAMPLE}; set TRAJECTORY_TRAINING_SAMPLES",
+    )
     def test_training_overview_shows_scaffold_label_for_real_agent_sample(self):
-        tool_path = Path("/Users/lxs/Documents/AI/trajectory-training-samples/claude_agent_sdk_tools.json")
+        tool_path = REAL_AGENT_SAMPLE
         raw = load_trajectory(str(tool_path))
         steps = parse_steps(raw)
         rows = build_message_metrics(steps)
