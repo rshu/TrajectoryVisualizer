@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
 from .batch import BatchResult
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +229,16 @@ def test_significance(
             "warning": warning,
         }
     except ImportError:
-        pass
+        # scipy is a declared dependency; reaching here means a broken/partial
+        # install. Degrade to the weaker sign test, but make it loud + visible
+        # rather than silently changing the reported p-values.
+        logger.warning(
+            "scipy not available — falling back to the binomial sign test "
+            "(weaker than Wilcoxon). Reinstall with scipy to restore it."
+        )
+        warning = "; ".join(
+            w for w in (warning, "scipy unavailable: used sign test (weaker than Wilcoxon)") if w
+        )
 
     # Fallback: sign test (binomial)
     diffs = [a - b for a, b in zip(after_values, before_values)]

@@ -28,6 +28,10 @@ dependencies = [
     "pygments>=2.0",
     "pandas>=2.0",
     "requests>=2.0",
+    # Used by converge/intervention.py for the Wilcoxon signed-rank test; was
+    # previously imported under try/except and silently degraded to a weaker
+    # sign test when absent.
+    "scipy>=1.10",
 ]
 
 [dependency-groups]
