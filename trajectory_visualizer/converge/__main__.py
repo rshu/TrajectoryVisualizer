@@ -1,6 +1,7 @@
 """Launch the Converge Gradio app via `python -m trajectory_visualizer.converge`."""
 
 import argparse
+import logging
 
 from .._server import add_server_args, resolve_launch_security
 
@@ -10,9 +11,18 @@ def main():
     add_server_args(parser)
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     # Same auth/exposure policy as Insight; Converge can read local files named
     # in an uploaded manifest, so an unauthenticated exposed launch is worse here.
     auth = resolve_launch_security(args, prog="converge")
+    logging.getLogger(__name__).info(
+        "Starting Converge on %s:%s (share=%s, auth=%s)",
+        args.host, args.port, args.share, "yes" if auth else "no",
+    )
 
     from .app import build_ui
 

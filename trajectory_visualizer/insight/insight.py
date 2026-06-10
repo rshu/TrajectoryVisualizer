@@ -3,6 +3,7 @@
 import base64
 import html
 import json
+import logging
 import os
 import re
 
@@ -69,6 +70,8 @@ from .rendering import (
     build_antipattern_summary_html,
 )
 from .styles import APP_CSS
+
+logger = logging.getLogger(__name__)
 
 _DETAIL_PLACEHOLDER = (
     "<div id='wf-detail-content'>"
@@ -1604,6 +1607,30 @@ def build_ui() -> gr.Blocks:
             )
 
         def do_load(upload_obj, dark=False, selected_format="ccsession"):
+            """Load a trajectory, converting any unexpected failure into a
+            friendly banner (logged server-side) instead of an uncaught crash.
+
+            A valid-JSON-but-wrong-shape file (e.g. a top-level list/scalar — a
+            common heterogeneous-export shape) otherwise throws uncaught inside
+            ``detect_format``/``parse_steps`` and surfaces only as a generic
+            Gradio error with nothing recorded.
+            """
+            try:
+                return _do_load_impl(upload_obj, dark, selected_format)
+            except Exception:
+                logger.exception(
+                    "do_load failed (file=%r, format=%r)",
+                    getattr(upload_obj, "name", upload_obj), selected_format,
+                )
+                banner = (
+                    "<p style='color:#dc2626;'>Could not load this trajectory. "
+                    "It may be malformed or an unsupported shape for the selected "
+                    "format. Check the file, or try a different format. "
+                    "(Details were written to the server log.)</p>"
+                )
+                return _empty_result(banner=banner, detail="*Could not load trajectory.*")
+
+        def _do_load_impl(upload_obj, dark=False, selected_format="ccsession"):
             """Load trajectory from uploaded file."""
             from .loaders import detect_format
 
