@@ -63,13 +63,26 @@ Custom port or host (prefix any of these with `uv run` when using uv):
 # Different port
 python -m trajectory_visualizer.insight --port 8080
 
-# Access from any IP on the network
-python -m trajectory_visualizer.insight --host 0.0.0.0
+# Access from any IP on the network (auth REQUIRED when exposed)
+python -m trajectory_visualizer.insight --host 0.0.0.0 --auth me:secret
 # Then access it via your server's IP address: `http://YOUR_IP:7860`
 
-# Create a public share link
-python -m trajectory_visualizer.insight --share
+# Create a public share link (auth REQUIRED)
+python -m trajectory_visualizer.insight --share --auth me:secret
 ```
+
+> **Security:** trajectories can contain source code, shell output, and secrets,
+> and the dashboard has no per-resource access control. Any *exposed* launch
+> (`--share` or a non-loopback `--host`) therefore **requires** `--auth USER:PASS`
+> (or `$GRADIO_AUTH`) — the server refuses to start otherwise. The loopback
+> default (`127.0.0.1`) needs no auth. See [SECURITY.md](./SECURITY.md).
+
+### Limits
+
+To keep rendering and memory bounded, the dashboard caps uploads at **100 MB**,
+displays the first **2,000 steps** of very long trajectories (with a banner),
+and truncates the raw-JSON view at **500 KB**. These are display/safety limits;
+the underlying file is unchanged.
 
 ---
 
