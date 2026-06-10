@@ -197,8 +197,12 @@ def _cc_extract_usage(usage: dict | None) -> dict:
     out = usage.get("output_tokens", 0) or 0
     cache_read = usage.get("cache_read_input_tokens", 0) or 0
     cache_write = usage.get("cache_creation_input_tokens", 0) or 0
-    # cache_write overlaps with input_tokens in Claude API — don't double-count
-    total = inp + out + cache_read
+    # Anthropic reports input_tokens, cache_read_input_tokens, and
+    # cache_creation_input_tokens as DISJOINT categories — input_tokens does NOT
+    # include cached tokens, and cache creation is billed separately (~1.25x).
+    # All three are real input processed, so the total must include cache
+    # creation (this also matches the OpenCode normalization path).
+    total = inp + out + cache_read + cache_write
     return {
         "total": total, "input": inp, "output": out, "reasoning": 0,
         "cache": {"read": cache_read, "write": cache_write},
