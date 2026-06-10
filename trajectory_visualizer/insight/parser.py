@@ -61,9 +61,17 @@ def infer_non_cache_input(
     total = total_tokens or 0
     cache_read = cache_read_tokens or 0
 
+    # No reliable session total to disambiguate the two schemas (e.g. OpenCode
+    # reports per-step input/output/cache but no `total`, so total==0). Default
+    # to "input is already fresh" — the common modern convention where fresh
+    # input is reported separately from cache_read. Subtracting cache_read here
+    # would double-discount input that never contained the cached tokens.
+    if total <= 0:
+        return max(0, input_tokens or 0)
+
     # When no token breakdown is available (all components zero but total > 0),
     # we cannot infer fresh vs cached — treat entire total as fresh.
-    if total > 0 and base == 0 and cache_read == 0:
+    if base == 0 and cache_read == 0:
         return total
 
     # Pick the interpretation whose implied total is closer to observed total.
