@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import html as html_stdlib
 import json
-import traceback
+import logging
 
 import gradio as gr
 
 from .styles import CONVERGE_CSS
+
+logger = logging.getLogger(__name__)
+
+
+def _error_panel(context: str, exc: Exception) -> str:
+    """Log the full traceback server-side and return a generic client-safe panel.
+
+    Never echo the traceback or raw exception text to the browser: it leaks
+    absolute paths, module layout, and dependency versions (and, for trajectory-
+    derived messages, is an HTML-injection vector).
+    """
+    logger.exception("%s failed", context)
+    return (
+        f"<div class='cvg-report'><div class='cvg-warning'>"
+        f"<b>{html_stdlib.escape(context)} failed.</b> "
+        f"Check your inputs; full details were written to the server log."
+        f"</div></div>"
+    )
 
 
 def build_ui() -> gr.Blocks:
@@ -113,13 +131,7 @@ def build_ui() -> gr.Blocks:
                 )
 
             except Exception as exc:
-                tb = traceback.format_exc()
-                err_html = (
-                    f"<div class='cvg-report'><div class='cvg-warning'>"
-                    f"<b>Error:</b> {html_stdlib.escape(str(exc))}"
-                    f"<pre style='font-size:0.75rem;margin-top:0.5rem;'>{html_stdlib.escape(tb)}</pre>"
-                    f"</div></div>"
-                )
+                err_html = _error_panel("Comparison", exc)
                 empty = _empty_figure(message="Comparison failed")
                 return err_html, empty, empty, empty, gr.update(value=empty, visible=False)
 
@@ -203,13 +215,7 @@ def build_ui() -> gr.Blocks:
                 return "".join(parts)
 
             except Exception as exc:
-                tb = traceback.format_exc()
-                return (
-                    f"<div class='cvg-report'><div class='cvg-warning'>"
-                    f"<b>Error:</b> {html_stdlib.escape(str(exc))}"
-                    f"<pre style='font-size:0.75rem;'>{html_stdlib.escape(tb)}</pre>"
-                    f"</div></div>"
-                )
+                return _error_panel("Batch", exc)
 
         batch_btn.click(
             fn=do_batch,
@@ -297,13 +303,7 @@ def build_ui() -> gr.Blocks:
                 return "".join(parts)
 
             except Exception as exc:
-                tb = traceback.format_exc()
-                return (
-                    f"<div class='cvg-report'><div class='cvg-warning'>"
-                    f"<b>Error:</b> {html_stdlib.escape(str(exc))}"
-                    f"<pre style='font-size:0.75rem;'>{html_stdlib.escape(tb)}</pre>"
-                    f"</div></div>"
-                )
+                return _error_panel("Before/after comparison", exc)
 
         ba_btn.click(
             fn=do_before_after,

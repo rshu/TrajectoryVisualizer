@@ -4,9 +4,9 @@ Calls Converge's lower-level functions directly (not build_comparison_report)
 so we can pass already-loaded data instead of file paths.
 """
 
+import logging
 import os
 import re
-import traceback
 
 import plotly.graph_objects as go
 
@@ -31,6 +31,8 @@ from trajectory_visualizer.converge.charts import (
     build_anchor_class_chart,
 )
 from trajectory_visualizer.converge.rendering import build_comparison_report_html
+
+logger = logging.getLogger(__name__)
 
 
 def _empty_fig() -> go.Figure:
@@ -278,11 +280,14 @@ def run_comparison(
             "anchor_fig": anchor_fig,
         }
 
-    except Exception as e:
+    except Exception:
+        # Log the full traceback server-side; never echo it (or the raw exception
+        # text) to the browser — it was previously rendered UNESCAPED, leaking
+        # paths/versions and allowing HTML injection from trajectory-derived text.
+        logger.exception("Insight comparison failed")
         empty["report_html"] = (
-            f"<div style='color:var(--ov-bad);padding:1em;'>"
-            f"<strong>Comparison failed:</strong> {type(e).__name__}: {e}"
-            f"<pre style='font-size:11px;margin-top:8px;color:var(--ov-muted);'>"
-            f"{traceback.format_exc()}</pre></div>"
+            "<div style='color:var(--ov-bad);padding:1em;'>"
+            "<strong>Comparison failed.</strong> Check the reference and compared "
+            "trajectories; full details were written to the server log.</div>"
         )
         return empty
