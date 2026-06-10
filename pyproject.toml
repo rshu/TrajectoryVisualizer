@@ -30,6 +30,9 @@ dependencies = [
     "requests>=2.0",
 ]
 
+[dependency-groups]
+dev = ["pytest>=8"]
+
 [project.scripts]
 trajectory-visualizer = "trajectory_visualizer.insight.__main__:main"
 
@@ -40,3 +43,7 @@ Issues = "https://github.com/rshu/TrajectoryVisualizer/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["trajectory_visualizer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
