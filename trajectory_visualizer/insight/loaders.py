@@ -1469,6 +1469,12 @@ def _build_codex_tool_input(tool_name: str, cmd: str, raw_args: dict) -> dict:
         return {"command": cmd}
 
 
+# Reject pathologically large uploads before reading them into memory. A
+# trajectory is held several times over (raw dict + steps + gr.State copies +
+# dumped string), so the working-set multiple of the file size is what matters.
+_MAX_FILE_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
 def load_trajectory(file_path: str, format_hint: str | None = None) -> dict:
     """Load trajectory file with error handling.
 
@@ -1482,21 +1488,48 @@ def load_trajectory(file_path: str, format_hint: str | None = None) -> dict:
     if file_path.endswith(".log"):
         return {"_error": "Unsupported file type: .log files are no longer supported."}
 
+    # Size guard (before any full read) to avoid self-inflicted OOM.
+    try:
+        size = os.path.getsize(file_path)
+    except OSError as exc:
+        return {"_error": str(exc)}
+    if size > _MAX_FILE_BYTES:
+        return {"_error": (
+            f"File is too large ({size / 1e6:.0f} MB; limit "
+            f"{_MAX_FILE_BYTES // (1024 * 1024)} MB). Trim the trajectory or raise "
+            f"the limit if you understand the memory cost."
+        )}
+
     # Handle Codex JSONL format
     if file_path.endswith(".jsonl"):
         try:
             events = []
+            bad_lines = 0
             with open(file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
-                    if line:
+                    if not line:
+                        continue
+                    # Per-line recovery: a single truncated/corrupt line (common
+                    # in crashed/killed sessions — exactly the runs users want to
+                    # diagnose) must not discard every prior valid event.
+                    try:
                         events.append(json.loads(line))
-            if events and events[0].get("type") == "session_meta":
+                    except json.JSONDecodeError:
+                        bad_lines += 1
+            if not events:
+                return {"_error": "No parseable JSONL events found in file."}
+            if events[0].get("type") == "session_meta":
                 result = _convert_codex_to_internal(events)
                 result["_source_path"] = file_path
+                if bad_lines:
+                    result["_load_warning"] = (
+                        f"Skipped {bad_lines} unparseable line(s) of "
+                        f"{bad_lines + len(events)}."
+                    )
                 return result
             return {"_error": "JSONL input is not supported for training conversations in v1; expected Codex JSONL format."}
-        except (json.JSONDecodeError, OSError) as exc:
+        except OSError as exc:
             return {"_error": str(exc)}
 
     try:
@@ -1504,6 +1537,14 @@ def load_trajectory(file_path: str, format_hint: str | None = None) -> dict:
             raw = json.load(f)
     except (json.JSONDecodeError, OSError) as exc:
         return {"_error": str(exc)}
+
+    # Top-level must be a JSON object; a list/scalar (a common heterogeneous
+    # export shape) would otherwise crash detect_format() on raw.get(...).
+    if not isinstance(raw, dict):
+        return {"_error": (
+            f"Expected a JSON object at the top level, got {type(raw).__name__}. "
+            f"This does not look like a supported trajectory export."
+        )}
 
     fmt = detect_format(raw)
     if fmt == "unknown" and format_hint in ("ccsession", "codearts", "opencode"):

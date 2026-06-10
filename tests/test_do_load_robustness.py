@@ -39,10 +39,20 @@ class DoLoadRobustnessTests(unittest.TestCase):
             os.unlink(tf.name)
 
         self.assertIsInstance(result, tuple)
-        # The summary-banner slot should carry the friendly load-failure message.
+        # The summary-banner slot should carry a load-failure message. The
+        # loader now rejects a wrong-shape top-level value with a precise
+        # "_error" ("Expected a JSON object …") handled by do_load's _error
+        # branch; if it ever crashes instead, the generic banner is shown.
+        # Either is acceptable here — the point is "no crash, shows an error".
         self.assertTrue(
-            any(isinstance(x, str) and "Could not load this trajectory" in x for x in result),
-            "expected a friendly load-failure banner in do_load output",
+            any(
+                isinstance(x, str)
+                and ("Could not load this trajectory" in x
+                     or "Expected a JSON object" in x
+                     or "top level" in x)
+                for x in result
+            ),
+            "expected a load-failure banner in do_load output",
         )
 
 
