@@ -2,11 +2,15 @@
 
 import argparse
 import logging
+import os
 
 from .._server import add_server_args, resolve_launch_security
 
 
 def main():
+    # Opt out of Gradio telemetry by default (must precede the gradio import).
+    os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+
     parser = argparse.ArgumentParser(description="Converge — two-trajectory comparison")
     add_server_args(parser)
     args = parser.parse_args()

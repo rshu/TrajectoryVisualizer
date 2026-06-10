@@ -2,12 +2,18 @@
 
 import argparse
 import logging
+import os
 import sys
 
 from .._server import add_server_args, resolve_launch_security
 
 
 def main():
+    # Opt out of Gradio's telemetry by default (it otherwise phones home to
+    # gradio/HuggingFace on launch). Set the env var to override. Must precede
+    # the gradio import below.
+    os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+
     parser = argparse.ArgumentParser(description="Insight")
     add_server_args(parser)
     args = parser.parse_args()
