@@ -58,8 +58,6 @@ from .patterns import (
     detect_tool_sequences, detect_failure_patterns,
     extract_plan_history, compute_plan_metrics,
     extract_subagent_sessions, compute_subagent_metrics,
-    detect_fruitless_streaks, compute_autonomy_ratio,
-    detect_tool_selection_antipatterns,
 )
 from .help import HELP_TEXT
 from .parser import load_labeled_json, aggregate_labels
@@ -68,7 +66,6 @@ from .rendering import (
     render_workflow_html, render_toc_sidebar, render_filter_chips,
     format_step_detail, render_agent_summary_cards,
     build_root_cause_html,
-    build_antipattern_summary_html,
 )
 from .styles import APP_CSS
 
@@ -496,8 +493,6 @@ def _build_chart_outputs(
     plan_metrics = compute_plan_metrics(plan_history)
     subagent_sessions = extract_subagent_sessions(steps, traj)
     subagent_metrics = compute_subagent_metrics(subagent_sessions, steps)
-    fruitless_streaks = detect_fruitless_streaks(steps, traj)
-    tool_selection = detect_tool_selection_antipatterns(steps)
 
     # Detect compression steps
     compression_steps = []
@@ -538,12 +533,6 @@ def _build_chart_outputs(
         context_growth_fig = build_context_growth_chart(
             message_rows, phases=None, dark=dark)
 
-    # New panels
-    error_count = sum(1 for s in steps for tc in s.get("tool_calls", []) if tc.get("error_type"))
-    antipattern_html = build_antipattern_summary_html(
-        fruitless_streaks, tool_selection, plan_metrics, error_count=error_count,
-    )
-
     return {
         "tok_fig": tok_fig,
         "dur_fig": dur_fig,
@@ -554,7 +543,6 @@ def _build_chart_outputs(
         "swimlane_fig": swimlane_fig,
         "plan_timeline_fig": plan_timeline_fig,
         "error_class_fig": error_class_fig,
-        "antipattern_html": antipattern_html,
         "context_growth_fig": context_growth_fig,
     }
 
@@ -1271,11 +1259,7 @@ def build_ui() -> gr.Blocks:
                     patterns_failure_html = gr.HTML(
                         "<div style='padding:1em;color:var(--ov-muted);text-align:center;'>Load a trajectory to detect failure patterns.</div>"
                     )
-                with gr.Accordion("Anti-Pattern Summary", open=True, elem_classes=["per-message-acc"]):
-                    antipattern_summary_html = gr.HTML(
-                        "<div style='padding:1em;color:var(--ov-muted);text-align:center;'>Load a trajectory to detect anti-patterns.</div>"
-                    )
-                with gr.Accordion("Catalog Detectors [S] — deterministic anti-pattern catalog", open=True, elem_classes=["per-message-acc"]):
+                with gr.Accordion("Anti-Patterns — deterministic [S] catalog", open=True, elem_classes=["per-message-acc"]):
                     gr.HTML("<div class='section-subtitle'>The frozen catalog's deterministic [S] detectors (core/catalog.py), run with scaffold-aware gating. These are the tested detectors that back the research catalog.</div>")
                     patterns_catalog_html = gr.HTML(
                         "<div style='padding:1em;color:var(--ov-muted);text-align:center;'>Load a trajectory to run the catalog detectors.</div>"
@@ -1608,7 +1592,6 @@ def build_ui() -> gr.Blocks:
                 # Patterns
                 "",              # patterns_tool_html
                 "",              # patterns_failure_html
-                "",              # antipattern_summary_html
                 "",              # patterns_catalog_html
                 {},              # state_raw
             )
@@ -1770,7 +1753,6 @@ def build_ui() -> gr.Blocks:
                 # Patterns
                 pat_tool_html,                # patterns_tool_html
                 pat_fail_html,                # patterns_failure_html
-                ch["antipattern_html"],       # antipattern_summary_html
                 catalog_html,                 # patterns_catalog_html
                 raw,                          # state_raw
             )
@@ -1813,7 +1795,6 @@ def build_ui() -> gr.Blocks:
             # Patterns
             patterns_tool_html,
             patterns_failure_html,
-            antipattern_summary_html,
             patterns_catalog_html,
             state_raw,
         ]
