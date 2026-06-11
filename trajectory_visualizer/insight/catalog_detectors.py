@@ -35,6 +35,27 @@ def _looks_like_path(target: str) -> bool:
     ))
 
 
+def _enrich_action_outputs(actions: list, steps: list[dict]) -> None:
+    """Attach each action's tool *output* into ``args['output']``.
+
+    ``canonicalize_steps`` carries only the tool *input* (query/pattern/path),
+    so output-dependent detectors — notably ``empty-result-churn``, which checks
+    whether a SEARCH returned nothing — cannot fire on real canonicalized data.
+    We match by ``tool_call_id`` and inject the output here (in the dashboard
+    bridge, leaving the shared/frozen canonicalization untouched).
+    """
+    out_by_id: dict[str, Any] = {}
+    for s in steps:
+        for tc in s.get("tool_calls", []):
+            tid = tc.get("tool_id") or tc.get("tool_call_id") or tc.get("id")
+            if tid:
+                out_by_id[tid] = tc.get("output", "")
+    for a in actions:
+        tid = getattr(a, "tool_call_id", "")
+        if tid and tid in out_by_id and isinstance(a.args, dict) and "output" not in a.args:
+            a.args["output"] = out_by_id[tid]
+
+
 def build_detector_context(
     steps: list[dict],
     labels: dict[int, dict[str, str]] | None = None,
@@ -81,6 +102,7 @@ def run_catalog_detectors(
     """
     actions = canonicalize_steps(steps, labels or None)
     assign_effect_labels(actions, steps)
+    _enrich_action_outputs(actions, steps)
     ctx = build_detector_context(steps, labels)
 
     out: list[dict[str, Any]] = []

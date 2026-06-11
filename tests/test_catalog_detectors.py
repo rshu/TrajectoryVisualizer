@@ -55,6 +55,14 @@ class CatalogDetectorsTests(unittest.TestCase):
         self.assertIn("<table", html)
         self.assertIn("search", html.lower())
 
+    def test_empty_result_churn_via_output_enrichment(self):
+        # 3 consecutive searches whose OUTPUT is empty. canonicalize only carries
+        # input, so this only fires because the bridge enriches args['output'].
+        steps = [_step(i, [_tc("Grep", {"pattern": f"q{i}"}, output="")]) for i in range(3)]
+        results = run_catalog_detectors(steps)
+        fired = {r["id"] for r in results if r["status"] == "fired"}
+        self.assertIn("empty-result-churn", fired)
+
     def test_render_empty(self):
         self.assertIn("Load a trajectory", render_catalog_detectors_html([]))
 
