@@ -1,0 +1,63 @@
+"""Tests for the catalog-detector dashboard bridge (run all [S] detectors)."""
+
+import unittest
+
+from trajectory_visualizer.insight.catalog_detectors import (
+    run_catalog_detectors,
+    summarize,
+    render_catalog_detectors_html,
+)
+
+
+def _tc(name, inp, status="completed", output="ok"):
+    return {"type": "tool_call", "tool_name": name, "input": inp,
+            "output": output, "status": status, "tool_id": f"t-{name}"}
+
+
+def _step(i, parts):
+    return {"index": i, "role": "assistant",
+            "tokens": {"total": 100, "input": 50, "output": 50},
+            "duration": 1.0, "tool_calls": parts, "parts": parts}
+
+
+class CatalogDetectorsTests(unittest.TestCase):
+    def test_returns_record_per_S_detector(self):
+        steps = [_step(0, [_tc("Read", {"file_path": "a.py"})])]
+        results = run_catalog_detectors(steps)
+        self.assertEqual(len(results), 20)  # all [S] detectors
+        ids = {r["id"] for r in results}
+        self.assertIn("search-loop", ids)
+        self.assertIn("shell-over-tool", ids)
+        for r in results:
+            self.assertIn(r["status"], ("fired", "clear", "gated"))
+
+    def test_search_loop_fires_on_consecutive_searches(self):
+        steps = [_step(i, [_tc("Grep", {"pattern": f"q{i}"})]) for i in range(4)]
+        results = run_catalog_detectors(steps)
+        fired = {r["id"] for r in results if r["status"] == "fired"}
+        self.assertIn("search-loop", fired)
+
+    def test_gating_records_reason_when_unmet(self):
+        # No planning tool exposed -> plan-stall is gated, not clear.
+        steps = [_step(0, [_tc("Read", {"file_path": "a.py"})])]
+        results = run_catalog_detectors(steps)
+        plan_stall = next(r for r in results if r["id"] == "plan-stall")
+        self.assertEqual(plan_stall["status"], "gated")
+        self.assertIn("tool-gated", plan_stall["reason"])
+
+    def test_summary_and_render(self):
+        steps = [_step(i, [_tc("Grep", {"pattern": f"q{i}"})]) for i in range(4)]
+        results = run_catalog_detectors(steps)
+        s = summarize(results)
+        self.assertEqual(s["fired"] + s["clear"] + s["gated"], 20)
+        self.assertGreaterEqual(s["total_detections"], 1)
+        html = render_catalog_detectors_html(results)
+        self.assertIn("<table", html)
+        self.assertIn("search", html.lower())
+
+    def test_render_empty(self):
+        self.assertIn("Load a trajectory", render_catalog_detectors_html([]))
+
+
+if __name__ == "__main__":
+    unittest.main()

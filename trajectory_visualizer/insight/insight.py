@@ -53,6 +53,7 @@ from .charts import (
 )
 
 from .comparison import run_comparison
+from .catalog_detectors import run_catalog_detectors, render_catalog_detectors_html
 from .patterns import (
     detect_tool_sequences, detect_failure_patterns,
     extract_plan_history, compute_plan_metrics,
@@ -1274,6 +1275,11 @@ def build_ui() -> gr.Blocks:
                     antipattern_summary_html = gr.HTML(
                         "<div style='padding:1em;color:var(--ov-muted);text-align:center;'>Load a trajectory to detect anti-patterns.</div>"
                     )
+                with gr.Accordion("Catalog Detectors [S] — deterministic anti-pattern catalog", open=True, elem_classes=["per-message-acc"]):
+                    gr.HTML("<div class='section-subtitle'>The frozen catalog's deterministic [S] detectors (core/catalog.py), run with scaffold-aware gating. These are the tested detectors that back the research catalog.</div>")
+                    patterns_catalog_html = gr.HTML(
+                        "<div style='padding:1em;color:var(--ov-muted);text-align:center;'>Load a trajectory to run the catalog detectors.</div>"
+                    )
 
             # ===== Comparison Tab (Converge embedded) =====
             with gr.TabItem("Comparison"):
@@ -1603,6 +1609,7 @@ def build_ui() -> gr.Blocks:
                 "",              # patterns_tool_html
                 "",              # patterns_failure_html
                 "",              # antipattern_summary_html
+                "",              # patterns_catalog_html
                 {},              # state_raw
             )
 
@@ -1716,6 +1723,10 @@ def build_ui() -> gr.Blocks:
             pat_tool_html = _render_tool_sequences_html(tool_seqs)
             pat_fail_html = _render_failure_patterns_html(fail_pats)
 
+            # Catalog detectors: the tested, frozen [S] catalog run with gating.
+            catalog_results = run_catalog_detectors(steps)
+            catalog_html = render_catalog_detectors_html(catalog_results)
+
             # Raw data
             raw_str = json.dumps(raw, indent=2, ensure_ascii=False, default=str)
             if len(raw_str) > 500_000:
@@ -1760,6 +1771,7 @@ def build_ui() -> gr.Blocks:
                 pat_tool_html,                # patterns_tool_html
                 pat_fail_html,                # patterns_failure_html
                 ch["antipattern_html"],       # antipattern_summary_html
+                catalog_html,                 # patterns_catalog_html
                 raw,                          # state_raw
             )
 
@@ -1802,6 +1814,7 @@ def build_ui() -> gr.Blocks:
             patterns_tool_html,
             patterns_failure_html,
             antipattern_summary_html,
+            patterns_catalog_html,
             state_raw,
         ]
 
