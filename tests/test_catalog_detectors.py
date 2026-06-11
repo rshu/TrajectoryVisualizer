@@ -6,6 +6,7 @@ from trajectory_visualizer.insight.catalog_detectors import (
     run_catalog_detectors,
     summarize,
     render_catalog_detectors_html,
+    labels_from_labeled_json,
 )
 
 
@@ -62,6 +63,28 @@ class CatalogDetectorsTests(unittest.TestCase):
         results = run_catalog_detectors(steps)
         fired = {r["id"] for r in results if r["status"] == "fired"}
         self.assertIn("empty-result-churn", fired)
+
+    def test_h_detectors_gated_without_labels(self):
+        # With the [H] band but no labels, semantic detectors are gated (could
+        # not fire), not falsely clear.
+        steps = [_step(0, [_tc("Read", {"file_path": "a.py"})])]
+        results = run_catalog_detectors(steps, bands=("[S]", "[H]"))
+        ids = {r["id"] for r in results}
+        self.assertIn("semantic-plan-stall", ids)  # [H] present
+        pss = next(r for r in results if r["id"] == "semantic-plan-stall")
+        self.assertEqual(pss["status"], "gated")
+        self.assertIn("requires_semantic_labels", pss["reason"])
+
+    def test_h_detectors_fire_with_labels(self):
+        # 5 plan-phase labels then implement -> semantic-plan-stall fires.
+        data = {"steps": [{"phase": "plan", "action": "planning"} for _ in range(5)]
+                + [{"phase": "implement", "action": "x"}]}
+        labels = labels_from_labeled_json(data)
+        self.assertEqual(len(labels), 6)
+        steps = [_step(i, []) for i in range(6)]
+        results = run_catalog_detectors(steps, labels=labels, bands=("[S]", "[H]"))
+        fired = {r["id"] for r in results if r["status"] == "fired"}
+        self.assertIn("semantic-plan-stall", fired)
 
     def test_render_empty(self):
         self.assertIn("Load a trajectory", render_catalog_detectors_html([]))

@@ -53,7 +53,9 @@ from .charts import (
 )
 
 from .comparison import run_comparison
-from .catalog_detectors import run_catalog_detectors, render_catalog_detectors_html
+from .catalog_detectors import (
+    run_catalog_detectors, render_catalog_detectors_html, labels_from_labeled_json,
+)
 from .patterns import (
     detect_tool_sequences, detect_failure_patterns,
     extract_plan_history, compute_plan_metrics,
@@ -2054,6 +2056,7 @@ def build_ui() -> gr.Blocks:
                     gr.update(visible=False), empty, empty,
                     gr.update(visible=False), empty,
                     steps_state, gr.update(), gr.update(), gr.update(), gr.update(),
+                    gr.update(),  # patterns_catalog_html (unchanged)
                 )
 
             try:
@@ -2072,6 +2075,21 @@ def build_ui() -> gr.Blocks:
                     workflow_update = render_workflow_html(updated_steps)
                     detail_store_update = _prerender_step_details(updated_steps)
                     detail_html_update = _DETAIL_PLACEHOLDER
+
+                # Phase/action labels unlock the [H] semantic detectors: re-run the
+                # catalog with labels so the Anti-Patterns panel adds them. Training-v2
+                # labels are a different schema and don't drive [H].
+                catalog_update = gr.update()
+                if payload.get("kind") != "training_v2" and steps_state:
+                    try:
+                        _ldata = load_labeled_json(file_path)
+                        _labels = labels_from_labeled_json(_ldata)
+                        catalog_update = render_catalog_detectors_html(
+                            run_catalog_detectors(steps_state, labels=_labels,
+                                                  bands=("[S]", "[H]"))
+                        )
+                    except Exception:
+                        catalog_update = gr.update()
             except Exception as exc:
                 return (
                     "",  # label_badge_html
@@ -2082,6 +2100,7 @@ def build_ui() -> gr.Blocks:
                     gr.update(visible=False), empty, empty,
                     gr.update(visible=False), empty,
                     steps_state, gr.update(), gr.update(), gr.update(), gr.update(),
+                    gr.update(),  # patterns_catalog_html (unchanged)
                 )
 
             return (
@@ -2092,6 +2111,7 @@ def build_ui() -> gr.Blocks:
                 gr.update(visible=True), payload["phase_duration_fig"], payload["action_duration_fig"],
                 gr.update(visible=True), payload["timeline_fig"],
                 updated_steps, wf_count_update, workflow_update, detail_store_update, detail_html_update,
+                catalog_update,  # patterns_catalog_html (adds [H] when labels present)
             )
 
         label_outputs = [
@@ -2108,6 +2128,7 @@ def build_ui() -> gr.Blocks:
             workflow_html,
             detail_store,
             detail_html,
+            patterns_catalog_html,
         ]
         label_load_btn.click(
             fn=do_load_labels,
@@ -2139,6 +2160,7 @@ def build_ui() -> gr.Blocks:
                 gr.update(),                              # workflow_html
                 gr.update(),                              # detail_store
                 gr.update(),                              # detail_html
+                gr.update(),                              # patterns_catalog_html (do_load sets it)
                 gr.update(value=None),                    # clear the file picker
             )
 

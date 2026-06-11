@@ -35,6 +35,19 @@ def _looks_like_path(target: str) -> bool:
     ))
 
 
+def labels_from_labeled_json(data: dict) -> dict[int, dict[str, str]]:
+    """Build a ``{step_index: {phase, action}}`` map from a loaded ``*_labeled.json``.
+
+    The ``[H]`` semantic detectors read this directly off ``DetectorContext.labels``
+    (keyed by step index), so the dashboard can pass it straight through.
+    """
+    out: dict[int, dict[str, str]] = {}
+    for i, s in enumerate(data.get("steps", []) or []):
+        if isinstance(s, dict):
+            out[i] = {"phase": str(s.get("phase", "")), "action": str(s.get("action", ""))}
+    return out
+
+
 def _enrich_action_outputs(actions: list, steps: list[dict]) -> None:
     """Attach each action's tool *output* into ``args['output']``.
 
