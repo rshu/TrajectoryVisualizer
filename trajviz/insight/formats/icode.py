@@ -377,7 +377,7 @@ def _convert_icode_messages(
             pending_stubs: list[tuple[str, str, dict]] = []
             for item in _icode_iter_contents(message.get("contents")):
                 ctype = item.get("type")
-                if ctype in ("reasoning", "thinking"):
+                if ctype in ("reasoning", "thinking", "text_reasoning"):
                     parts.append({"type": "reasoning", "text": item.get("text") or item.get("thinking") or ""})
                 elif ctype == "text":
                     text = item.get("text") or ""
