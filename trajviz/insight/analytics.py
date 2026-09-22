@@ -1,8 +1,6 @@
-"""Per-step analytics, phase detection, and behavioral insights."""
+"""Per-step analytics aligned with the trajectory step model."""
 
-import statistics
-
-from .metrics import tool_call_duration_ms
+from .metrics import tool_call_stats_duration_ms
 from .parser import infer_non_cache_input
 
 
@@ -12,13 +10,10 @@ def compute_step_analytics(steps: list[dict]) -> list[dict]:
     for i, step in enumerate(steps):
         duration_s = step["duration"]
 
-        # Tool time: naive sum of individual tool call durations (may overcount
-        # parallel calls). Uses the shared fallback chain in
-        # tool_call_duration_ms, matching the message-level tool-time
-        # computation exactly.
+        # Non-spawn tool time (may still overcount parallel calls within a step).
         tool_time_ms = 0
         for tc in step["tool_calls"]:
-            v = tool_call_duration_ms(tc)
+            v = tool_call_stats_duration_ms(tc)
             if v is not None:
                 tool_time_ms += v
 
@@ -36,7 +31,7 @@ def compute_step_analytics(steps: list[dict]) -> list[dict]:
         cache_ratio = round(cache_read / tok_total, 4) if tok_total > 0 else 0.0
         input_tok = step["tokens"]["input"]
         output_tok = step["tokens"]["output"]
-        reasoning_tok = step["tokens"]["reasoning"]
+        reasoning_tok = step["tokens"].get("reasoning", 0)
         non_cache_tok = infer_non_cache_input(
             total_tokens=tok_total,
             input_tokens=input_tok,
@@ -79,116 +74,3 @@ def compute_step_analytics(steps: list[dict]) -> list[dict]:
         })
 
     return analytics
-
-
-
-def generate_insights(
-    analytics: list[dict],
-    phases: list[dict],
-    steps: list[dict] | None = None,
-) -> list[str]:
-    """Generate human-readable behavioral insight strings."""
-    asst = [a for a in analytics if a["role"] == "assistant"]
-    if not asst:
-        return ["No assistant steps found."]
-
-    insights: list[str] = []
-
-    # 1. Latency source
-    high_tool = [(a["index"], a["tool_time_share"])
-                 for a in asst
-                 if a["tool_time_share"] is not None and a["tool_time_share"] > 0.5]
-    if high_tool:
-        ex = ", ".join(f"step {idx} ({s * 100:.0f}%)" for idx, s in high_tool[:3])
-        insights.append(f"Tool-heavy steps (tool_time > 50% of step duration): {ex}.")
-    else:
-        insights.append(
-            "Most latency is model-side, not tool-side. "
-            "No step has tool_time_share > 50%.")
-
-    # 2. Cache behavior
-    crs = [a["cache_ratio"] for a in asst if a["tok_total"] > 0]
-    if crs:
-        sorted_crs = sorted(crs)
-        med_cr = statistics.median(crs)
-        min_cr = sorted_crs[0]
-        min_step = next(
-            a["index"] for a in asst
-            if a["tok_total"] > 0 and a["cache_ratio"] == min_cr)
-        insights.append(
-            f"Cache behavior: median cache read = {med_cr * 100:.1f}%. "
-            f"Lowest: step {min_step} ({min_cr * 100:.1f}%).")
-
-    # 3. Slow-turn outliers (no tool waiting)
-    slow = [(a["index"], a["duration_s"])
-            for a in asst
-            if a["duration_s"] is not None and a["duration_s"] > 30
-            and (a["tool_time_share"] is None or a["tool_time_share"] < 0.3)]
-    if slow:
-        slow.sort(key=lambda x: -x[1])
-        ex = ", ".join(f"step {idx} ({d:.1f}s)" for idx, d in slow[:3])
-        insights.append(
-            f"Slow turns without tool waiting: {ex} "
-            "\u2014 likely long internal reasoning.")
-
-    # 4. High-token turns near end
-    sorted_by_tok = sorted(asst, key=lambda a: -a["tok_total"])
-    top_tok = sorted_by_tok[:3]
-    late = [a for a in top_tok if a["index"] >= len(analytics) * 0.7]
-    if late:
-        ex = ", ".join(
-            f"step {a['index']} ({a['tok_total']:,} tok)" for a in late)
-        insights.append(f"Largest token turns near end: {ex}.")
-
-    # 5. Context escalation — monotonically increasing input tokens
-    asst_toks = [a["tok_total"] for a in asst if a["tok_total"] > 0]
-    if len(asst_toks) >= 4:
-        increasing_run = 1
-        max_run = 1
-        for i in range(1, len(asst_toks)):
-            if asst_toks[i] > asst_toks[i - 1]:
-                increasing_run += 1
-                max_run = max(max_run, increasing_run)
-            else:
-                increasing_run = 1
-        if max_run >= 4:
-            ratio = asst_toks[-1] / asst_toks[0] if asst_toks[0] > 0 else 0
-            insights.append(
-                f"Context escalation: {max_run} consecutive steps with "
-                f"non-decreasing token count. Last/first ratio: {ratio:.1f}x."
-            )
-
-    # 6. Tool retry / repetition detection
-    if steps:
-        from collections import Counter
-        tool_targets: list[tuple[str, str]] = []
-        for s in steps:
-            for tc in s.get("tool_calls", []):
-                name = tc.get("tool_name", "")
-                inp = tc.get("input", {})
-                # Build a target key from tool name + primary input field
-                target = ""
-                if isinstance(inp, dict):
-                    for k in ("file_path", "command", "pattern", "url",
-                              "path", "query", "prompt"):
-                        if inp.get(k):
-                            v = str(inp[k])
-                            target = v[:80]
-                            break
-                if name and target:
-                    tool_targets.append((name, target))
-        if tool_targets:
-            counts = Counter(tool_targets)
-            repeats = [(k, v) for k, v in counts.items() if v >= 3]
-            if repeats:
-                repeats.sort(key=lambda x: -x[1])
-                examples = []
-                for (tool, target), cnt in repeats[:3]:
-                    short_target = target[:40] + "..." if len(target) > 40 else target
-                    examples.append(f"{tool}({short_target}) x{cnt}")
-                insights.append(
-                    f"Tool repetition detected: {', '.join(examples)}. "
-                    "Agent may be retrying or stuck in a loop."
-                )
-
-    return insights if insights else ["Insufficient data for behavioral insights."]

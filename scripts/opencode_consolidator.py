@@ -12,17 +12,30 @@ Usage:
     If output-file is "-", output is written to stdout.
 
     Environment variables:
-        OPENCODE_DATABASE: Path to opencode database (default: ~/.local/share/opencode/opencode.db)
+        OPENCODE_DATABASE: Path to opencode database (highest priority).
+        OPENCODE_DB: OpenCode's native database path override.
+        OPENCODE_DATA_DIR: OpenCode data directory (looks for opencode.db inside).
+        XDG_DATA_HOME: XDG data root (default file: $XDG_DATA_HOME/opencode/opencode.db).
+
+        Default file, when none of the above are set:
+            ~/.local/share/opencode/opencode.db
+        On Windows, if that file is missing, also checks:
+            %LOCALAPPDATA%\\opencode\\opencode.db
+            %APPDATA%\\opencode\\opencode.db
 
 Example:
     # Export to file
-    python scripts/opencode_consolidator.py ses_123abc456 def export.json
+    python scripts/opencode_consolidator.py ses_123abc456 export.json
 
     # Export to stdout
     python scripts/opencode_consolidator.py ses_123abc456 -
 
-    # Use custom database path
+    # Use custom database path (POSIX)
     OPENCODE_DATABASE=/custom/path/opencode.db python scripts/opencode_consolidator.py ses_123abc456 output.json
+
+    # Use custom database path (Windows PowerShell)
+    $env:OPENCODE_DATABASE = "$env:USERPROFILE\\.local\\share\\opencode\\opencode.db"
+    python scripts/opencode_consolidator.py ses_123abc456 output.json
 
 Output structure:
     {
@@ -50,20 +63,78 @@ except ImportError:  # Direct execution from scripts/.
     import _common  # type: ignore[no-redef]
 
 
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _database_uri(path: Path) -> str:
+    """Read-only SQLite URI. Path.as_uri() emits file:///C:/... on Windows."""
+    return f"{Path(path).expanduser().resolve().as_uri()}?mode=ro"
+
+
+def _default_data_dirs() -> list[Path]:
+    """Directories OpenCode may use for ``opencode.db``.
+
+    OpenCode's own default (xdg-basedir) is ``~/.local/share/opencode`` on every
+    OS, including Windows. Explicit ``OPENCODE_DATA_DIR`` / ``XDG_DATA_HOME``
+    overrides replace that default. When no override is set on Windows, also
+    search ``%LOCALAPPDATA%\\opencode`` and ``%APPDATA%\\opencode`` so outdated
+    docs and native Windows layouts still resolve.
+    """
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = os.path.normcase(str(path))
+        if key not in seen:
+            seen.add(key)
+            dirs.append(path)
+
+    if data := os.environ.get("OPENCODE_DATA_DIR"):
+        add(Path(data).expanduser())
+        return dirs
+
+    if xdg := os.environ.get("XDG_DATA_HOME"):
+        add(Path(xdg).expanduser() / "opencode")
+        return dirs
+
+    add(Path.home() / ".local" / "share" / "opencode")
+    if _on_windows():
+        for env_key in ("LOCALAPPDATA", "APPDATA"):
+            value = os.environ.get(env_key)
+            if value:
+                add(Path(value).expanduser() / "opencode")
+    return dirs
+
+
 def get_db_path() -> Path:
-    """Get the opencode database path."""
-    # Use OPENCODE_DATABASE environment variable if set, else use XDG data dir
-    if "OPENCODE_DATABASE" in os.environ:
-        return Path(os.environ["OPENCODE_DATABASE"])
+    """Resolve the opencode SQLite database path.
 
-    try:
-        from xdg import BaseDirectory
+    Precedence:
+        1. ``OPENCODE_DATABASE`` (this tool's override)
+        2. ``OPENCODE_DB`` (OpenCode's native override; absolute as-is, else
+           relative to the primary data directory)
+        3. ``opencode.db`` in the first existing candidate data directory
+        4. ``opencode.db`` in the primary data directory (for the not-found error)
+    """
+    if configured := os.environ.get("OPENCODE_DATABASE"):
+        return Path(configured).expanduser()
 
-        xdg_data = BaseDirectory.xdg_data_home
-        return Path(xdg_data) / "opencode" / "opencode.db"
-    except ImportError:
-        # Fallback to default location
-        return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    data_dirs = _default_data_dirs()
+    primary = data_dirs[0]
+
+    opencode_db = os.environ.get("OPENCODE_DB")
+    if opencode_db and opencode_db != ":memory:":
+        named = Path(opencode_db).expanduser()
+        if named.is_absolute():
+            return named
+        return primary / opencode_db
+
+    for data_dir in data_dirs:
+        candidate = data_dir / "opencode.db"
+        if candidate.is_file():
+            return candidate
+    return primary / "opencode.db"
 
 
 def export_session_and_collect_children(
@@ -320,13 +391,24 @@ def print_usage():
     print("  output-file   Optional output path. Use '-' for stdout.", file=sys.stderr)
     print("                Defaults to 'export-<session-id>.json'", file=sys.stderr)
     print("\nEnvironment variables:", file=sys.stderr)
-    print("  OPENCODE_DATABASE  Path to opencode database", file=sys.stderr)
-    print("                     (default: ~/.local/share/opencode/opencode.db)", file=sys.stderr)
+    print("  OPENCODE_DATABASE  Path to opencode database (highest priority)", file=sys.stderr)
+    print("  OPENCODE_DB        OpenCode's native database path override", file=sys.stderr)
+    print("  OPENCODE_DATA_DIR  OpenCode data directory (opencode.db inside)", file=sys.stderr)
+    print("  XDG_DATA_HOME      XDG data root ($XDG_DATA_HOME/opencode/opencode.db)", file=sys.stderr)
+    print("                     Default: ~/.local/share/opencode/opencode.db", file=sys.stderr)
+    print("                     Windows also checks %LOCALAPPDATA%\\opencode and", file=sys.stderr)
+    print("                     %APPDATA%\\opencode when the default file is missing.", file=sys.stderr)
     print("\nExamples:", file=sys.stderr)
     print(f"  {sys.argv[0]} ses_123abc456", file=sys.stderr)
     print(f"  {sys.argv[0]} ses_123abc456 export.json", file=sys.stderr)
     print(f"  {sys.argv[0]} ses_123abc456 - > output.json", file=sys.stderr)
     print(f"  OPENCODE_DATABASE=/custom/opencode.db {sys.argv[0]} ses_123abc456", file=sys.stderr)
+    print("  # Windows PowerShell:", file=sys.stderr)
+    print(
+        '  $env:OPENCODE_DATABASE = "$env:USERPROFILE\\.local\\share\\opencode\\opencode.db"',
+        file=sys.stderr,
+    )
+    print(f"  python {sys.argv[0]} ses_123abc456 export.json", file=sys.stderr)
 
 
 def ensure_output_is_not_source(
@@ -354,11 +436,15 @@ def main():
     else:
         output_file = f"export-{session_id}.json"
 
-    # Get database path
-    db_path = Path(os.environ.get("OPENCODE_DATABASE", get_db_path()))
+    db_path = get_db_path().expanduser()
 
-    if not db_path.exists():
+    if not db_path.is_file():
         print(f"Error: Database not found at {db_path}", file=sys.stderr)
+        print(
+            "Set OPENCODE_DATABASE to the full path of opencode.db "
+            "(on Windows, typically %USERPROFILE%\\.local\\share\\opencode\\opencode.db).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     try:
@@ -376,8 +462,7 @@ def main():
     try:
         # Read-only: never mutate the user's live store (a journal_mode=WAL
         # PRAGMA rewrites the DB header and creates -wal/-shm sidecar files).
-        db_uri = f"{Path(db_path).expanduser().resolve().as_uri()}?mode=ro"
-        conn = sqlite3.connect(db_uri, uri=True, timeout=10)
+        conn = sqlite3.connect(_database_uri(db_path), uri=True, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
 

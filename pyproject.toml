@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "trajviz"
 version = "1.0.0"
-description = "Offline analytics & visualization for LLM agent trajectories (Claude Code, OpenCode, CodeArts, Codex CLI)"
+description = "Offline analytics & visualization for LLM agent trajectories (Claude Code, Cursor, OpenCode, CodeArts, ICode, Codex CLI, Pi, DeepSeek Harness)"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

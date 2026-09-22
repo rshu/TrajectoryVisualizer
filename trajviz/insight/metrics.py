@@ -3,11 +3,9 @@
 import math
 import statistics
 
-# Statuses that mark a tool call as failed. Single definition shared by
-# tool_success_rate (_compute_tool_stats) and edit_precision
-# (compute_diagnostic_metrics) so the two can never disagree.
-_FAILURE_STATUSES = {"error", "failed", "failure", "cancelled", "canceled",
-                     "timeout", "timed_out"}
+from trajviz.tool_vocab import SPAWN_TOOL_NAMES
+
+from .tool_failure import tool_call_failed
 
 
 def effective_agent(s: dict) -> str:
@@ -36,6 +34,143 @@ def effective_agent(s: dict) -> str:
     return ""
 
 
+def _clip_agent_label(name: str, max_len: int) -> str:
+    if max_len <= 1 or len(name) <= max_len:
+        return name
+    return name[: max_len - 1] + "…"
+
+
+def _preset_used_by_tagged_subagents(mode: str, steps: list[dict]) -> bool:
+    if not mode:
+        return False
+    for s in steps:
+        if not isinstance(s, dict) or not s.get("is_sub_agent"):
+            continue
+        if str(s.get("agent") or "").strip() == mode:
+            return True
+    return False
+
+
+def _name_used_by_parent_agent(name: str, steps: list[dict]) -> bool:
+    if not name:
+        return False
+    for s in steps:
+        if not isinstance(s, dict) or s.get("is_sub_agent"):
+            continue
+        if str(s.get("agent") or "").strip() == name:
+            return True
+    return False
+
+
+def tagged_subagent_display_label(
+    agent_id: str,
+    steps: list[dict],
+    *,
+    max_len: int = 20,
+) -> str | None:
+    """Label a lane as ``main`` / ``sub {id}`` when the run tags sub-agents.
+
+    DSH (and similar) share a generic preset name across parent and children.
+    Returns ``None`` when the run has no ``is_sub_agent`` steps, or when this
+    lane is mixed, so callers can keep format-specific names (OpenCode modes).
+    """
+    if not agent_id:
+        return None
+    tagged = any(isinstance(s, dict) and s.get("is_sub_agent") for s in steps)
+    if not tagged:
+        return None
+    sid = agent_id
+    mode = ""
+    if "::" in agent_id:
+        sid, mode = agent_id.split("::", 1)
+        mode = mode.strip()
+
+    lane_sub = False
+    lane_parent = False
+    title = ""
+    child_names: set[str] = set()
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        step_sid = str(s.get("session_id") or "")
+        if step_sid != sid and effective_agent(s) not in {agent_id, sid}:
+            continue
+        step_mode = str(s.get("agent") or "").strip()
+        if mode and step_mode and step_mode != mode:
+            if not (
+                step_mode == "compaction"
+                or s.get("role") == "compaction"
+                or s.get("is_compaction_checkpoint")
+            ):
+                continue
+        if s.get("is_sub_agent"):
+            lane_sub = True
+            if step_mode and step_mode != "compaction":
+                child_names.add(step_mode)
+        elif s.get("role") in ("assistant", "user", "compaction"):
+            lane_parent = True
+        if not title:
+            candidate = str(s.get("session_title") or "").strip()
+            if candidate:
+                title = candidate
+
+    if lane_sub and not lane_parent:
+        if title:
+            return _clip_agent_label(title, max_len)
+        distinctive = [
+            name for name in child_names
+            if not _name_used_by_parent_agent(name, steps)
+        ]
+        if len(distinctive) == 1:
+            return _clip_agent_label(distinctive[0], max_len)
+        short = sid[:12] if len(sid) > 12 else sid
+        if short:
+            return f"sub {short}"
+        return _clip_agent_label(mode or agent_id, max_len)
+    if lane_parent and not lane_sub:
+        if mode and not _preset_used_by_tagged_subagents(mode, steps):
+            return _clip_agent_label(mode, max_len)
+        return "main"
+    return None
+
+
+def agent_display_label(agent_id: str, steps: list[dict], *, max_len: int = 20) -> str:
+    """Card / token-chart / Overview label for an ``effective_agent`` id.
+
+    Empty id is ``main``. Tagged DSH-style runs reuse
+    ``tagged_subagent_display_label`` so cards match the swimlane. Other
+    formats keep the truncated id.
+    """
+    if not agent_id:
+        return "main"
+    tagged = tagged_subagent_display_label(agent_id, steps, max_len=max_len)
+    if tagged:
+        return tagged
+    return agent_id[:8] + "\u2026" if len(agent_id) > 8 else agent_id
+
+
+def disambiguate_agent_labels(
+    agent_ids: list[str],
+    steps: list[dict],
+    *,
+    max_len: int = 20,
+) -> dict[str, str]:
+    """Unique display labels; suffix a short session id when names collide."""
+    from collections import Counter
+
+    raw = {aid: agent_display_label(aid, steps, max_len=max_len) for aid in agent_ids}
+    counts = Counter(raw.values())
+    out: dict[str, str] = {}
+    for aid, label in raw.items():
+        if counts[label] > 1 and aid:
+            sid = aid.split("::", 1)[0] if "::" in aid else aid
+            suffix = sid[-6:] if len(sid) > 6 else sid
+            out[aid] = f"{label} ({suffix})"
+        else:
+            out[aid] = label
+    return out
+
+
 def _percentile(values: list[float], q: float) -> float:
     """Compute percentile using nearest-rank (q in [0, 1])."""
     if not values:
@@ -54,12 +189,25 @@ def _percentile(values: list[float], q: float) -> float:
 def tool_call_duration_ms(tc: dict) -> float | None:
     """Best-effort duration of one tool call in milliseconds.
 
-    Fallback chain: explicit ``time_start``/``time_end`` pair, then
-    ``duration_ms``, then ``metadata.totalDurationMs`` (Claude Code tool
-    calls carry only the latter). Returns ``None`` when no usable timing
-    exists. Shared by analytics, message metrics, tool stats, and hotspot
-    decomposition so they can never disagree about the same tool call.
+    Fallback chain:
+
+    1. ``time_created``/``time_updated`` — OpenCode part wall-clock from when
+       the tool call was issued until the result was written (includes queue).
+    2. ``time_start``/``time_end`` — execution window only (OpenCode
+       ``state.time``, or formats that stamp run bounds).
+    3. ``duration_ms``, then ``metadata.totalDurationMs`` (Claude Code).
+
+    Returns ``None`` when no usable timing exists. Shared by analytics,
+    message metrics, tool stats, and hotspot decomposition so they can never
+    disagree about the same tool call.
     """
+    created, updated = tc.get("time_created"), tc.get("time_updated")
+    if (
+        isinstance(created, (int, float))
+        and isinstance(updated, (int, float))
+        and updated >= created
+    ):
+        return float(updated - created)
     ts, te = tc.get("time_start"), tc.get("time_end")
     if isinstance(ts, (int, float)) and isinstance(te, (int, float)) and te >= ts:
         return float(te - ts)
@@ -68,6 +216,81 @@ def tool_call_duration_ms(tc: dict) -> float | None:
         meta = tc.get("metadata")
         dm = meta.get("totalDurationMs") if isinstance(meta, dict) else None
     return float(dm) if isinstance(dm, (int, float)) and dm > 0 else None
+
+
+def is_spawn_tool_call(tc: dict) -> bool:
+    return (tc.get("tool_name") or "") in SPAWN_TOOL_NAMES
+
+
+def tool_call_stats_duration_ms(tc: dict) -> float | None:
+    """Duration for aggregate tool stats (excludes spawn/delegation tools).
+
+    Spawn wall-clock is the child's run and is already reflected in child
+    steps' tools/durations; counting it again inflates Tool time / wait %.
+    """
+    if is_spawn_tool_call(tc):
+        return None
+    return tool_call_duration_ms(tc)
+
+
+def spawn_wait_seconds(step: dict) -> float:
+    """Wall-clock spent blocked on spawn/delegation tools for *step*.
+
+    Parallel ``task``/``Agent`` calls overlap, so this is the **max** timed
+    spawn duration on the step (not the sum). Returns ``0`` when none.
+    """
+    wait = 0.0
+    for tc in step.get("tool_calls") or []:
+        if not isinstance(tc, dict) or not is_spawn_tool_call(tc):
+            continue
+        ms = tool_call_duration_ms(tc)
+        if ms is not None:
+            wait = max(wait, ms / 1000.0)
+    return wait
+
+
+def step_duration_excluding_spawn(step: dict) -> float | None:
+    """Step duration with spawn/delegation wait removed.
+
+    Used by the Step Duration chart and by :func:`generation_seconds` for the
+    output tok/s denominator. Parent messages blocked on ``task``/``Agent``
+    report wall-clock that is really the child's run; subtracting that wait
+    avoids double-counting.
+    """
+    raw = step.get("duration")
+    if (
+        not isinstance(raw, (int, float))
+        or isinstance(raw, bool)
+        or not math.isfinite(raw)
+    ):
+        return None
+    return max(0.0, float(raw) - spawn_wait_seconds(step))
+
+
+def non_spawn_tool_seconds(step: dict) -> float:
+    """Sum of timed non-spawn tool durations on *step* (seconds)."""
+    total = 0.0
+    for tc in step.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        ms = tool_call_stats_duration_ms(tc)
+        if ms is not None:
+            total += ms / 1000.0
+    return total
+
+
+def generation_seconds(step: dict) -> tuple[float, float] | None:
+    """Return ``(generation_s, capped_tool_wait_s)`` excluding spawn wait.
+
+    Output tok/s uses generation time as the denominator so a long Bash call
+    does not look like near-zero throughput. Tool wait is capped so overlapping
+    stamps cannot drive generation negative. Returns ``None`` without duration.
+    """
+    remaining = step_duration_excluding_spawn(step)
+    if remaining is None:
+        return None
+    tool_s = min(non_spawn_tool_seconds(step), remaining)
+    return remaining - tool_s, tool_s
 
 
 def _raw_summary(raw: dict) -> tuple[dict, dict | None]:
@@ -83,34 +306,6 @@ def _churn(summary: dict | None) -> int | None:
     if summary and "additions" in summary and "deletions" in summary:
         return summary["additions"] + summary["deletions"]
     return None
-
-
-def validate_token_integrity(steps: list[dict]) -> list[str]:
-    """Check for steps with missing or all-zero token data.
-
-    Returns a list of human-readable warning strings (empty if all OK).
-    """
-    zero_token_steps = []
-    for s in steps:
-        tokens = s.get("tokens", {})
-        total = tokens.get("total", 0) or 0
-        inp = tokens.get("input", 0) or 0
-        out = tokens.get("output", 0) or 0
-        cache = tokens.get("cache_read", 0) or 0
-        if total == 0 and inp == 0 and out == 0 and cache == 0:
-            if s.get("role") == "assistant":
-                zero_token_steps.append(s.get("index", "?"))
-
-    warnings: list[str] = []
-    if zero_token_steps:
-        n = len(zero_token_steps)
-        examples = ", ".join(str(i) for i in zero_token_steps[:5])
-        suffix = f" and {n - 5} more" if n > 5 else ""
-        warnings.append(
-            f"{n} assistant step(s) have zero token data "
-            f"(steps {examples}{suffix}) \u2014 metrics may be inaccurate."
-        )
-    return warnings
 
 
 def build_message_metrics(steps: list[dict]) -> list[dict]:
@@ -134,11 +329,7 @@ def build_message_metrics(steps: list[dict]) -> list[dict]:
         )
         duration = s.get("duration")
 
-        tool_time_sum = 0.0
-        for tc in s.get("tool_calls", []):
-            v = tool_call_duration_ms(tc)
-            if v is not None:
-                tool_time_sum += v / 1000.0
+        tool_time_sum = non_spawn_tool_seconds(s)
 
         part_counts: dict[str, int] = {}
         for p in s.get("parts", []):
@@ -184,7 +375,7 @@ def _compute_command_metrics(steps: list[dict]) -> dict:
             if "exit" in meta:
                 cmd_total += 1
                 # exit=None (cancelled/unfinished, no exit code recorded) is not
-                # a failure — matches _step_has_error/cluster_errors/_tool_failed.
+                # a failure — matches tool_call_failed / cluster_errors.
                 if meta["exit"] not in (None, 0):
                     cmd_failures += 1
     if cmd_total == 0:
@@ -199,14 +390,20 @@ def _compute_command_metrics(steps: list[dict]) -> dict:
 def _compute_timing_metrics(steps: list[dict]) -> dict:
     """Compute TTFT, output throughput, TTLT, and timing coverage.
 
-    Output throughput uses output tokens and duration from the exact same set
-    of assistant steps.  This prevents untimed output (which is common for
-    some sub-agent final messages) from inflating the measured rate.
+    Output throughput uses output tokens and generation time from the exact
+    same set of assistant steps.  This prevents untimed output (which is
+    common for some sub-agent final messages) from inflating the measured rate.
+
+    Denominator is step duration minus spawn/delegation wait and timed
+    non-spawn tool time, so blocked Bash/script waits are not counted as
+    generation. When tool stamps are missing, those waits remain in the
+    denominator (conservative under-estimate of gen rate).
     """
     first_user_created = None
     first_asst_completed = None
     last_asst_completed = None
     timed_asst_duration = 0.0
+    timed_tool_wait = 0.0
     timed_output_tokens = 0.0
     assistant_step_count = 0
     timed_assistant_step_count = 0
@@ -239,8 +436,13 @@ def _compute_timing_metrics(steps: list[dict]) -> dict:
                 and output_tokens >= 0
             )
             if has_duration and has_output_tokens:
+                gen_pair = generation_seconds(s)
+                if gen_pair is None:
+                    continue
+                gen_s, tool_wait_s = gen_pair
                 timed_assistant_step_count += 1
-                timed_asst_duration += duration
+                timed_asst_duration += gen_s
+                timed_tool_wait += tool_wait_s
                 timed_output_tokens += output_tokens
 
     result: dict = {}
@@ -264,6 +466,7 @@ def _compute_timing_metrics(steps: list[dict]) -> dict:
     )
     result["output_throughput_timed_tokens"] = timed_output_tokens
     result["output_throughput_timed_seconds"] = round(timed_asst_duration, 3)
+    result["output_throughput_tool_wait_seconds"] = round(timed_tool_wait, 3)
 
     if first_user_created is not None and last_asst_completed is not None:
         result["time_to_last_token"] = round((last_asst_completed - first_user_created) / 1000, 3)
@@ -344,8 +547,12 @@ def _compute_token_stats(total_tokens, total_duration, steps, message_rows, raw)
     }
 
 
-def _compute_tool_stats(steps, total_tokens_total, total_duration, message_rows):
-    """Tool frequency, success rate, duration, and load metrics."""
+def _compute_tool_stats(steps, total_tokens_total, message_rows, wait_denom: float):
+    """Tool frequency, success rate, duration, and load metrics.
+
+    Timed aggregates omit spawn/delegation tools. ``wait_denom`` should be
+    session wall-clock (not summed step durations) when subagents overlap.
+    """
     tool_count = 0
     tool_breakdown: dict[str, int] = {}
     tool_status_breakdown: dict[str, int] = {}
@@ -360,23 +567,20 @@ def _compute_tool_stats(steps, total_tokens_total, total_duration, message_rows)
             tool_breakdown[name] = tool_breakdown.get(name, 0) + 1
             status = tc.get("status", "unknown")
             tool_status_breakdown[status] = tool_status_breakdown.get(status, 0) + 1
-            if status in _FAILURE_STATUSES:
+            if tool_call_failed(tc):
                 tool_fail += 1
-            elif status in {"?", "unknown", ""}:
-                # Unknown status: treat as success unless it has a classified error_type
-                if tc.get("error_type"):
-                    tool_fail += 1
-                else:
-                    tool_success += 1
+            elif str(status).lower() in {"?", "unknown", ""}:
+                tool_success += 1
             else:
                 tool_success += 1
-            v = tool_call_duration_ms(tc)
+            v = tool_call_stats_duration_ms(tc)
             if v is not None:
                 tool_durations.append(v / 1000.0)
 
     assistant_rows = [r for r in message_rows if r.get("role") == "assistant"]
     tool_time_total = sum(r["tool_time_sum"] for r in message_rows)
     avg_td = statistics.mean(tool_durations) if tool_durations else 0
+    denom = float(wait_denom) if wait_denom > 0 else 0.0
     return {
         "tool_call_count": tool_count,
         "tool_breakdown": tool_breakdown,
@@ -386,15 +590,15 @@ def _compute_tool_stats(steps, total_tokens_total, total_duration, message_rows)
         "tool_success_rate": round(tool_success / tool_count * 100, 1) if tool_count else 0,
         "tokens_per_tool": round(total_tokens_total / tool_count) if tool_count else 0,
         "tool_time_total": round(tool_time_total, 2),
-        "tool_wait_share": round(tool_time_total / total_duration * 100, 1) if total_duration else 0,
+        "tool_wait_share": round(tool_time_total / denom * 100, 1) if denom else 0,
         "avg_tool_duration": round(avg_td, 3),
         "p95_tool_duration": round(_percentile(tool_durations, 0.95), 3) if tool_durations else 0,
         "max_tool_duration": round(max(tool_durations), 3) if tool_durations else 0,
         "multi_tool_steps": sum(1 for r in assistant_rows if r["tool_calls"] >= 2),
         "no_tool_assistant_steps": sum(1 for r in assistant_rows if r["tool_calls"] == 0),
         "patch_steps": sum(1 for r in assistant_rows if r["patch_parts"] > 0),
-        "tool_calls_per_min": round(tool_count / (total_duration / 60), 2) if total_duration > 0 else None,
-        "tool_time_fraction": round(tool_time_total / total_duration, 4) if total_duration > 0 else None,
+        "tool_calls_per_min": round(tool_count / (denom / 60), 2) if denom > 0 else None,
+        "tool_time_fraction": round(tool_time_total / denom, 4) if denom > 0 else None,
         "tool_system_failure_rate": round(tool_fail / tool_count, 4) if tool_count > 0 else None,
     }
 
@@ -430,9 +634,11 @@ def _compute_efficiency_stats(steps, message_rows, raw):
     file_status_raw = raw.get("file_status")
     asst_durs = [s["duration"] for s in steps if s.get("role") == "assistant" and s.get("duration") is not None]
     user_n, asst_n = roles.get("user", 0), roles.get("assistant", 0)
+    agent_labels = disambiguate_agent_labels(list(agent_breakdown), steps)
     return {
         "messages_breakdown": roles,
         "agent_breakdown": agent_breakdown,
+        "agent_labels": agent_labels,
         "model_breakdown": model_breakdown,
         "finish_breakdown": finish_breakdown,
         "reasoning_parts": reasoning_parts,
@@ -458,6 +664,33 @@ def _compute_efficiency_stats(steps, message_rows, raw):
     }
 
 
+def session_wall_clock_seconds(
+    steps: list[dict],
+    timing: dict | None = None,
+) -> float | None:
+    """Calendar elapsed time for the session in seconds.
+
+    Prefers ``timing.total_duration`` from the loader when present. Otherwise
+    derives wall-clock from the span of step ``time_created_ms`` /
+    ``time_completed_ms``. That matters for multi-agent traces where summed
+    step durations double-count overlapping parent wait and child work.
+    """
+    if isinstance(timing, dict):
+        td = timing.get("total_duration")
+        if isinstance(td, (int, float)) and not isinstance(td, bool) and td > 0:
+            return float(td)
+    stamps: list[float] = []
+    for s in steps:
+        for key in ("time_created_ms", "time_completed_ms"):
+            v = s.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                stamps.append(float(v))
+    if len(stamps) < 2:
+        return None
+    span = (max(stamps) - min(stamps)) / 1000.0
+    return span if span > 0 else None
+
+
 def compute_metrics(steps: list[dict], raw: dict, message_rows: list[dict] | None = None) -> dict:
     """Aggregate metrics from parsed steps and raw trajectory."""
     if message_rows is None:
@@ -468,11 +701,20 @@ def compute_metrics(steps: list[dict], raw: dict, message_rows: list[dict] | Non
     total_duration = sum(durations)
     total_tokens = {"total": 0, "input": 0, "output": 0, "reasoning": 0,
                     "cache_read": 0, "cache_write": 0}
+    from .parser import _optional_token_count
+
+    reasoning_tokens_reported = False
     for s in steps:
+        tokens = s["tokens"]
+        if _optional_token_count(tokens, "reasoning") is not None:
+            reasoning_tokens_reported = True
         for k in total_tokens:
-            total_tokens[k] += s["tokens"].get(k, 0)
+            total_tokens[k] += tokens.get(k, 0) or 0
 
     timing = raw.get("timing", {}) if isinstance(raw.get("timing"), dict) else {}
+    wall_clock = session_wall_clock_seconds(steps, timing)
+    if wall_clock is None:
+        wall_clock = total_duration
 
     return {
         "total_steps": len(steps),
@@ -481,9 +723,10 @@ def compute_metrics(steps: list[dict], raw: dict, message_rows: list[dict] | Non
         "median_duration": round(statistics.median(durations), 2) if durations else 0,
         "p95_duration": round(_percentile(durations, 0.95), 2) if durations else 0,
         "max_duration": round(max(durations), 2) if durations else 0,
-        "wall_clock": timing.get("total_duration", total_duration),
+        "wall_clock": wall_clock,
+        "reasoning_tokens_reported": reasoning_tokens_reported,
         **_compute_token_stats(total_tokens, total_duration, steps, message_rows, raw),
-        **_compute_tool_stats(steps, total_tokens["total"], total_duration, message_rows),
+        **_compute_tool_stats(steps, total_tokens["total"], message_rows, float(wall_clock)),
         **_compute_efficiency_stats(steps, message_rows, raw),
         **_compute_command_metrics(steps),
         **_compute_timing_metrics(steps),
@@ -494,36 +737,26 @@ def compute_metrics(steps: list[dict], raw: dict, message_rows: list[dict] | Non
 def compute_diagnostic_metrics(
     steps: list[dict],
     trajectory: list[dict],
-    step_labels: dict[int, dict[str, str]] | None = None,
+    *,
+    tool_fail: int | None = None,
 ) -> dict:
-    """Compute diagnostic metrics from trajectory analysis.
+    """Sub-agent counts, tool-error chip, and edit precision.
 
-    These metrics require the raw trajectory data (not just parsed steps)
-    for sub-agent detection, fruitless streak analysis, etc.
-
-    Args:
-        step_labels: Optional mapping from step index to {phase, action}
-            from the step labeler. Enables semantic anti-pattern detection.
+    Pass *tool_fail* from ``compute_metrics`` to avoid a second tool-call scan.
     """
     from .patterns import (
-        extract_plan_history, compute_plan_metrics as _plan_metrics,
-        extract_subagent_sessions, compute_subagent_metrics,
-        detect_fruitless_streaks, compute_autonomy_ratio,
-        detect_tool_selection_antipatterns,
-        build_structural_phase_segments, detect_phase_anomalies,
-        detect_semantic_antipatterns,
+        extract_subagent_sessions,
+        compute_subagent_metrics,
     )
 
-    plan_history = extract_plan_history(steps)
-    plan_m = _plan_metrics(plan_history)
     sessions = extract_subagent_sessions(steps, trajectory)
     sa_metrics = compute_subagent_metrics(sessions, steps)
-    streaks = detect_fruitless_streaks(steps)
-    autonomy = compute_autonomy_ratio(steps)
-    tool_sel = detect_tool_selection_antipatterns(steps)
-    error_count = sum(1 for s in steps for tc in s.get("tool_calls", []) if tc.get("error_type"))
+    error_count = (
+        int(tool_fail)
+        if tool_fail is not None
+        else sum(1 for s in steps for tc in s.get("tool_calls", []) if tool_call_failed(tc))
+    )
 
-    # Edit precision: successful edits / total edit attempts
     from trajviz.tool_vocab import WRITE_TOOL_NAMES as edit_tools
     edit_total = 0
     edit_success = 0
@@ -531,86 +764,18 @@ def compute_diagnostic_metrics(
         for tc in s.get("tool_calls", []):
             if tc.get("tool_name") in edit_tools:
                 edit_total += 1
-                # Same failure definition as tool_success_rate: cancelled and
-                # timed-out edits are failures, not successes.
-                if tc.get("status") not in _FAILURE_STATUSES:
+                if not tool_call_failed(tc):
                     edit_success += 1
 
-    # Search-to-action ratio: read/search calls per edit/write call
-    search_tools = {"Read", "read", "Grep", "grep", "Glob", "glob",
-                    "WebFetch", "WebSearch"}
-    search_count = sum(1 for s in steps for tc in s.get("tool_calls", [])
-                       if tc.get("tool_name") in search_tools)
-
-    # Context compression events — deduplicate between part scan and token drop
-    compression_steps: set[int] = set()
-    for i, s in enumerate(steps):
-        for p in s.get("parts", []):
-            if (p.get("type") in ("step_start", "step_finish")
-                    and "compress" in p.get("name", "").lower()):
-                compression_steps.add(i)
-    # Token-drop heuristic: only applies when tokens grow cumulatively across
-    # steps (e.g., Claude Code context window).  For formats with per-step
-    # deltas, tokens naturally vary, so drops are not compressions.
-    # Detect cumulative pattern: tokens should generally be non-decreasing.
-    asst_tokens = [s.get("tokens", {}).get("total", 0) or 0
-                   for s in steps if s.get("role") == "assistant"]
-    if len(asst_tokens) >= 5:
-        increasing = sum(1 for a, b in zip(asst_tokens, asst_tokens[1:], strict=False) if b >= a)
-        is_cumulative = increasing / (len(asst_tokens) - 1) > 0.7
-    else:
-        is_cumulative = False
-    if is_cumulative:
-        for i in range(1, len(steps)):
-            if steps[i].get("role") != "assistant":
-                continue
-            prev_tok = steps[i - 1].get("tokens", {}).get("total", 0) or 0
-            curr_tok = steps[i].get("tokens", {}).get("total", 0) or 0
-            if prev_tok > 0 and curr_tok > 0 and curr_tok < prev_tok * 0.3:
-                if i not in compression_steps:
-                    compression_steps.add(i)
-    compression_count = len(compression_steps)
-
-    structural_phases = build_structural_phase_segments(steps)
-    structural_regressions = detect_phase_anomalies(steps, structural_phases)
-
-    # Semantic anti-patterns (requires step labels from the step labeler)
-    sem = detect_semantic_antipatterns(steps, step_labels or {})
-
-    result = {
-        "plan_stall_count": len(plan_m.get("stalled", [])),
-        "plan_reset_count": plan_m.get("plan_resets", 0),
-        "plan_total_items": plan_m.get("total_items", 0),
+    return {
         "subagent_session_count": len(sessions),
         "subagent_total_steps": sum(s.get("step_count", 0) for s in sa_metrics),
         "subagent_total_tokens": sum(s.get("total_tokens", 0) for s in sa_metrics),
-        "fruitless_streak_count": len(streaks),
-        "fruitless_streak_max": max((s["length"] for s in streaks), default=0),
-        "autonomy_ratio": autonomy,
-        "tool_selection_flags": len(tool_sel),
         "classified_error_count": error_count,
         "edit_total": edit_total,
         "edit_success": edit_success,
         "edit_precision": round(edit_success / edit_total * 100, 1) if edit_total else None,
-        "search_to_action": round(search_count / edit_total, 1) if edit_total else None,
-        "compression_count": compression_count,
-        "structural_phase_count": len(structural_phases),
-        "structural_phase_regression_count": len(structural_regressions),
-        "structural_phases": structural_phases,
-        "structural_phase_regressions": structural_regressions,
     }
-
-    # Append semantic anti-pattern counts when labels are available
-    if step_labels:
-        result["phase_oscillation_count"] = len(sem["phase_oscillation"])
-        result["premature_implementation"] = len(sem["premature_implementation"]) > 0
-        result["semantic_fruitless_exploration_count"] = len(sem["semantic_fruitless_exploration"])
-        result["validation_avoidance"] = len(sem["validation_avoidance"]) > 0
-        result["debug_without_hypothesis_count"] = len(sem["debug_without_hypothesis"])
-        result["semantic_plan_stall_count"] = len(sem["semantic_plan_stall"])
-        result["semantic_antipatterns"] = sem
-
-    return result
 
 
 def compute_health_verdict(metrics: dict, step_analytics: list[dict]) -> list[dict]:
@@ -645,7 +810,8 @@ def compute_health_verdict(metrics: dict, step_analytics: list[dict]) -> list[di
     else:
         verdicts.append({"metric": "Tool Success", "status": "bad", "label": f"{tool_rate}%", "detail": f"{tool_rate}% success — high failure rate across {tool_count} calls"})
 
-    # Generation throughput — output tokens per second of assistant wall time.
+    # Generation throughput — output tokens per second of model time
+    # (assistant step duration minus spawn wait and timed tool waits).
     # NOTE: use output_tokens_per_sec, not tokens_per_second, which divides the
     # cumulative cache-read context (re-counted every turn) by wall time and is
     # inflated ~(#turns)x, making the verdict structurally "good".
@@ -653,6 +819,7 @@ def compute_health_verdict(metrics: dict, step_analytics: list[dict]) -> list[di
     timed_steps = metrics.get("output_throughput_timed_steps")
     throughput_steps = metrics.get("output_throughput_total_steps")
     incomplete_timing = metrics.get("output_throughput_incomplete", False)
+    excl_tools = (metrics.get("output_throughput_tool_wait_seconds") or 0) > 0
     coverage_note = ""
     if (
         incomplete_timing
@@ -661,20 +828,22 @@ def compute_health_verdict(metrics: dict, step_analytics: list[dict]) -> list[di
         and throughput_steps > 0
     ):
         coverage_note = f"; based on {timed_steps}/{throughput_steps} assistant steps with timing"
+    if excl_tools:
+        coverage_note += "; tool wait excluded from denominator"
     if gen_rate is None:
         detail = "No timing/output-token data"
         if coverage_note:
             detail += coverage_note
         verdicts.append({"metric": "Throughput", "status": "good", "label": "N/A", "detail": detail})
     elif gen_rate >= 50:
-        verdicts.append({"metric": "Throughput", "status": "good", "label": f"{gen_rate} output tok/s",
-                         "detail": f"{gen_rate} output tok/s — strong throughput{coverage_note}"})
+        verdicts.append({"metric": "Throughput", "status": "good", "label": f"{gen_rate} gen tok/s",
+                         "detail": f"{gen_rate} gen tok/s — strong throughput{coverage_note}"})
     elif gen_rate >= 20:
-        verdicts.append({"metric": "Throughput", "status": "warn", "label": f"{gen_rate} output tok/s",
-                         "detail": f"{gen_rate} output tok/s — moderate throughput{coverage_note}"})
+        verdicts.append({"metric": "Throughput", "status": "warn", "label": f"{gen_rate} gen tok/s",
+                         "detail": f"{gen_rate} gen tok/s — moderate throughput{coverage_note}"})
     else:
-        verdicts.append({"metric": "Throughput", "status": "bad", "label": f"{gen_rate} output tok/s",
-                         "detail": f"{gen_rate} output tok/s — low throughput{coverage_note}"})
+        verdicts.append({"metric": "Throughput", "status": "bad", "label": f"{gen_rate} gen tok/s",
+                         "detail": f"{gen_rate} gen tok/s — low throughput{coverage_note}"})
 
     # Failed tool calls — tool_fail counts failing tool CALLS (already reflected
     # in Tool Success); label accordingly rather than as "error steps".
@@ -691,15 +860,19 @@ def compute_health_verdict(metrics: dict, step_analytics: list[dict]) -> list[di
 
 
 def extract_agent_info(steps: list[dict]) -> tuple[str, str, str]:
-    """Return (model_id, provider_id, agent_id) from the first assistant step."""
+    """Return (model_id, provider_id, agent_id) for the session header.
+
+    Model and provider come from the last assistant step that recorded them,
+    so a mid-session switch (Pi provider retries, etc.) is what the header
+    shows. Agent id is the first non-empty agent field.
+    """
     model_id = provider_id = agent_id = ""
     for s in steps:
-        if s["role"] == "assistant" and s.get("model_id"):
+        if s.get("role") == "assistant" and s.get("model_id"):
             model_id = s["model_id"]
-            provider_id = s.get("provider_id", "")
-            if s.get("agent"):
+            provider_id = s.get("provider_id", "") or provider_id
+            if not agent_id and s.get("agent"):
                 agent_id = s["agent"]
-            break
     if not agent_id:
         for s in steps:
             if s.get("agent"):
@@ -770,12 +943,11 @@ def compute_agent_summary(steps: list[dict], raw: dict) -> list[dict]:
             if tid:
                 tool_call_step_map[tid] = s.get("index", 0)
 
+    labels = disambiguate_agent_labels(agent_order, steps)
     result = []
     for agent_id in agent_order:
         d = stats[agent_id]
-        label = "main" if not agent_id else (
-            agent_id[:8] + "\u2026" if len(agent_id) > 8 else agent_id
-        )
+        label = labels.get(agent_id, agent_id if agent_id else "main")
         total_tok = d["total_tokens"]
         cache_read = d["cache_read_tokens"]
         cache_pct = round(cache_read / total_tok * 100, 1) if total_tok > 0 else 0.0

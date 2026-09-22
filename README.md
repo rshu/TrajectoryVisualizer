@@ -4,7 +4,7 @@
 
 TrajViz loads a single agent trajectory (or compares two), parses it into a normalized step model, and renders an interactive Gradio + Plotly dashboard covering tokens, timing, tool-use patterns, phase composition, anti-pattern detections, step-label analysis, and cross-trajectory divergence.
 
-Supports trajectories from **Claude Code**, **OpenCode**, **CodeArts**, and **Codex CLI** out of the box.
+Supports trajectories from **Claude Code**, **Cursor**, **OpenCode**, **CodeArts**, **ICode**, **Codex CLI**, **Pi**, and **DeepSeek Harness** out of the box.
 
 ---
 
@@ -63,7 +63,36 @@ python -m trajviz.insight
 trajviz
 ```
 
-Default: `http://localhost:7860`. Upload a trajectory JSON via the file picker at the top of the UI.
+Default: `http://localhost:7860`. Upload a trajectory JSON via the file picker at the top of the UI. After load, **Export HTML** downloads a standalone Overview + charts + Patterns snapshot (charts stay interactive via Plotly's CDN).
+
+Headless report, no dashboard:
+
+```bash
+python -m trajviz.insight --report path/to/trajectory.json -o report.html
+```
+
+The **AI Trajectory Analysis** sidebar starts closed; open it from the
+labeled control on the right edge. It runs an automatic analysis
+when a trajectory loads, then answers follow-up questions. It uses the same
+dashboard statistics (health verdicts, bottlenecks, failures, fruitless
+streaks) and replies in Simplified Chinese. It does not re-upload the raw
+file. Configure the model in `.env`:
+
+```bash
+cp .env.example .env
+# set ANALYZE_BASE_URL / ANALYZE_API_KEY / ANALYZE_MODEL
+# (LABEL_* from the step labeler is used if ANALYZE_* is omitted)
+```
+
+| Variable | Meaning |
+|---|---|
+| `ANALYZE_BASE_URL` | API base URL (OpenAI-compatible, or Anthropic messages) |
+| `ANALYZE_API_KEY`  | API key |
+| `ANALYZE_MODEL`    | Model name, e.g. `gpt-4o-mini`, `glm-4.6` |
+
+Optional: `ANALYZE_PROVIDER` (`openai` \| `anthropic`, default `openai`),
+`ANALYZE_TEMPERATURE` (default `0.2`), `ANALYZE_MAX_TOKENS` (default `2048`),
+`ANALYZE_TIMEOUT` (default `120`). `.env` is gitignored.
 
 Custom port or host (prefix any of these with `uv run` when using uv):
 
@@ -110,17 +139,23 @@ python -m trajviz.insight --port 8080
 
 ## Supported trajectory formats
 
-trajviz normalizes the following formats. Select the matching format in the
-**Format** dropdown before loading — auto-detection is used to reject a
-mismatched selection (Codex `.jsonl` rollouts are recognized regardless of the
-dropdown):
+trajviz normalizes the following formats. **Auto-detect** is the default —
+upload a `.json` / `.jsonl` / `.zip` file and load it. Pick a specific format only to
+override detection or to load a Claude Code export that lacks the usual
+`format` marker. An explicit pick still rejects a mismatched JSON file
+(Codex, Pi, and DeepSeek Harness `.jsonl` sessions, and ICode expanded-session
+JSON, are recognized regardless of the dropdown):
 
 | Format | Detection | Notes |
 |---|---|---|
 | Claude Code | `format: ccsession-trajectory` | Full support: tokens, cache, tool calls, thinking. Produced by [ccsession](https://github.com/rshu/ccsession) (see below). |
+| Cursor | `export_metadata.source_format: cursor_composer` | Consolidated from local `agent-transcripts` JSONL + Composer `state.vscdb`. Tool inputs always; tool outputs, step clocks (`startedAtMs`/`completedAtMs`), and context-window occupancy when the DB row is present. Per-step token bars are ≈4-chars/token estimates of logged text and tools — Cursor does not persist billed per-request tokens. |
 | OpenCode | `info` + `messages` shape | Includes sub-agent sessions |
 | CodeArts | `export_metadata.source_format: codearts_opencode_sqlite` with schema version 2 | Preserved token breakdown and consolidated parent/sub-agent sessions |
-| Codex CLI | `.jsonl` rollout starting with a `session_meta` event | Normalized into the shared step model (recognized from the `.jsonl` upload with any dropdown selection); tool intent (Read / Grep / Glob / Write / Bash) inferred from classic `exec_command` calls and modern `exec` / `apply_patch` records |
+| ICode | `_chrys_export.format: chrys-expanded-session-v1` (or `meta` + `state.messages`) | Normalized from a Chrys expanded-session JSON; `glob` / `grep` / `sh` / `explore_agent` mapped into the shared step model. Nested `_chrys_sub_agent_sessions` are flattened. |
+| Codex CLI | `.jsonl` rollout starting with a `session_meta` event | Normalized into the shared step model (Auto-detect recognizes `.jsonl` uploads); tool intent (Read / Grep / Glob / Write / Bash) inferred from classic `exec_command` calls and modern `exec` / `apply_patch` records |
+| Pi | `.jsonl` session starting with a `session` event | Normalized from `~/.pi/agent/sessions/` exports; `bash` / `read` / `write` / `edit` / `grep` mapped into the shared step model |
+| DeepSeek Harness | `.jsonl` session starting with a `session` header that has `createdAt` (epoch ms) and slash-typed body events (`user/message`, `tool/call`, …) | Normalized from a DSH export folder or zip (`session.jsonl` + `subagents/<id>/session.jsonl`); `bash` / `read` / `write` / `glob` / `todo_write` / `subagent_fork` mapped into the shared step model. Child logs drop the inherited parent prefix (`seedLength`). |
 
 ---
 
@@ -196,9 +231,38 @@ trajviz expects.
    Insight dashboard — the loader detects the `format: ccsession-trajectory`
    marker and normalizes the step model automatically.
 
+### Cursor
+
+Cursor stores each Agent chat as JSONL under
+`~/.cursor/projects/<workspace>/agent-transcripts/<chat-id>/` plus Composer
+metadata in `state.vscdb`. TrajViz does not read those stores live — export
+with the consolidator:
+
+1. Copy the chat id from the chat header menu (**Copy ID**, not Copy Request
+   ID). It is also the transcript folder name.
+2. Export that chat (parent + subagents, joined with Composer metadata):
+   ```bash
+   python scripts/cursor_consolidator.py <chat-id> cursor_trajectory.json
+   ```
+   On this WSL setup the DB is typically
+   `/mnt/c/Users/<user>/AppData/Roaming/Cursor/User/globalStorage/state.vscdb`.
+   Override with `CURSOR_STATE_VSCDB` or `--db` if needed. `CURSOR_PROJECTS_DIR`
+   overrides `~/.cursor/projects`.
+3. List known chats:
+   ```bash
+   python scripts/cursor_consolidator.py --list
+   ```
+4. Upload `cursor_trajectory.json` in the Insight dashboard. The loader
+   detects `export_metadata.source_format: cursor_composer`. Context occupancy
+   (`promptTokenBreakdown` and `tokens.context_window`) is a **window snapshot**.
+   Per-step duration comes from Composer tool/thinking clocks. Per-step token
+   bars use a ≈4 chars/token estimate of logged text and tools, not billed
+   API usage.
+
 ### OpenCode
 
-OpenCode stores sessions in its local store (`~/.local/share/opencode/`) and
+OpenCode stores sessions in its local store (`~/.local/share/opencode/`; on
+Windows `%USERPROFILE%\.local\share\opencode\`) and
 exposes an `export` command that writes trajectory JSON to stdout.
 
 1. Run an OpenCode session as normal.
@@ -228,7 +292,13 @@ exposes an `export` command that writes trajectory JSON to stdout.
    ```
    The consolidator follows tool-call metadata to discover child session IDs
    and emits a flat `{"sessions": [...]}` structure that the loader threads
-   into a single trajectory.
+   into a single trajectory. It looks for `opencode.db` under
+   `~/.local/share/opencode/` (and on Windows also `%LOCALAPPDATA%\opencode\`
+   and `%APPDATA%\opencode\`). Override with `OPENCODE_DATABASE` if needed:
+   ```powershell
+   $env:OPENCODE_DATABASE = "$env:USERPROFILE\.local\share\opencode\opencode.db"
+   python scripts/opencode_consolidator.py <session-id> op_trajectory.json
+   ```
 4. Upload `op_trajectory.json` in the Insight dashboard. The loader detects the
    `info` + `messages` shape automatically; sub-agent sessions are threaded in.
 
@@ -260,6 +330,18 @@ archival JSON. That legacy output preserves the original message records for
 reproducibility but is **not** loadable by the dashboard, which only supports
 the current export format.
 
+### ICode
+
+ICode (Chrys) expanded-session exports are a JSON object with `meta`,
+`state.messages`, and `_chrys_export.format: chrys-expanded-session-v1`.
+Sub-agent runs are nested under `_chrys_sub_agent_sessions` in the same file.
+
+1. Export the session from ICode / chrys-manager as expanded session JSON
+   (not the compressed transcript).
+2. Upload the `.json` file. Auto-detect recognizes the Chrys envelope.
+   `glob` / `grep` / `sh` / `explore_agent` map into the shared tool
+   vocabulary, and nested sub-agent sessions are threaded into the step model.
+
 ### Codex CLI
 
 Codex CLI records every session automatically as a JSONL rollout under
@@ -269,11 +351,46 @@ files) — no exporter needed.
 1. Run a Codex session as normal.
 2. Locate the rollout file for the session — the most recent
    `rollout-*.jsonl` under `~/.codex/sessions/`.
-3. Upload the `.jsonl` file and select **Codex** as the format. The loader
-   detects the leading `session_meta` event and threads the rollout into the
-   shared step model. Per-step tool intent (Read / Grep / Glob / Write / Bash)
+3. Upload the `.jsonl` file. Auto-detect (the default) recognizes the
+   leading `session_meta` event and threads the rollout into the shared
+   step model. Per-step tool intent (Read / Grep / Glob / Write / Bash)
    is inferred from classic `exec_command` calls and modern `exec` /
    `apply_patch` records.
+
+### Pi
+
+Pi records every session automatically as JSONL under
+`~/.pi/agent/sessions/<url-encoded-cwd>/`. No exporter is needed.
+
+1. Run a Pi session as normal.
+2. Locate the session file — the most recent `*.jsonl` under
+   `~/.pi/agent/sessions/` (directories are named from the working folder).
+3. Upload the `.jsonl` file. Auto-detect (the default) recognizes the
+   leading `session` event and threads messages, thinking, tool calls
+   (`bash` / `read` / `write` / …), and token usage into the shared step
+   model.
+
+### DeepSeek Harness
+
+DeepSeek Harness (DSH) records each session as JSONL. The GUI export is a
+folder (or zip) named `dsh-session-<session-id>/` containing the parent
+`session.jsonl` and, when the run spawned sub-agents, `subagents/<id>/session.jsonl`.
+
+1. Run a DSH session as normal.
+2. Export / download the session log from the DSH GUI (zip), or copy the
+   session directory.
+3. Upload the **zip** (GUI exports put `session.jsonl` and `subagents/` at
+   the zip root). That is the path that works on a hosted dashboard — the
+   server never sees the uploader's `~/Downloads`. Auto-detect recognizes the
+   leading `session` header (`createdAt`, slash-typed events) and does **not**
+   treat it as a Pi log. Child sessions are merged from zip members, or from a
+   sibling `subagents/` tree when you load a session directory (or
+   `session.jsonl` next to that tree) on the same machine. Uploading a
+   lone `session.jsonl` on a hosted dashboard cannot pick up children —
+   the server has no access to the uploader's filesystem. Operators can
+   set `TRAJVIZ_DSH_EXPORT_ROOT` to a directory on the host that contains
+   the export (or `dsh-session-<id>/`). Inherited parent turns at the
+   front of each child log are skipped.
 
 ---
 
@@ -283,15 +400,16 @@ Helper utilities that live in `scripts/` (run from the repo root):
 
 | File | Purpose |
 |---|---|
+| `cursor_consolidator.py` | Read-only export of a Cursor Agent chat: JSONL transcripts + Composer `state.vscdb`, including subagent sessions. See the **Cursor** collection section above. |
 | `codearts_consolidator.py` | Read-only export from a CodeArts `opencode.db` with recursive child sessions, or lossless archival merge of legacy `messages_<n>.json` shards. See the **CodeArts** collection section above. |
 | `opencode_consolidator.py` | Recursively merge an OpenCode parent session and child sub-agent sessions into a single JSON. See the **OpenCode** collection section above. |
-| `step_labeler.py` | LLM-based per-step classifier. Reads a trajectory and emits a sidecar `*_labeled.json` with phase and action tags from the taxonomy. |
-| `step_labeler_v2.py` | Variant of `step_labeler.py` that emits one record for **every** parsed step: assistant steps via the LLM, user steps as deterministic `user/user_prompt`, with `index`/`raw_index` preserved for exact source mapping. |
-| `TAXONOMY_REFERENCE.md` | Authoritative list of phase and action tags the labeler emits. Auto-loaded by `step_labeler.py` from its own directory. |
+| `step_labeler_v2.py` | **Preferred** LLM step classifier. Emits one label record for **every** parsed step: assistant steps via the LLM, user steps as deterministic `user/user_prompt`, with `index`/`raw_index` preserved for exact source mapping. |
+| `step_labeler.py` | Shared taxonomy/LLM helpers used by v2, plus a **compat CLI** that routes to v2 in assistant-only mode (`*_labeled.json`). Prefer `step_labeler_v2.py` for new work. |
+| `TAXONOMY_REFERENCE.md` | Authoritative list of phase and action tags the labeler emits. Auto-loaded by the labeler from its own directory. |
 
 ### Labeling a trajectory
 
-`step_labeler.py` makes live LLM calls via
+Use **`step_labeler_v2.py`** for new sidecars. It makes live LLM calls via
 `requests`, which is installed by default with the rest of the project.
 
 The labeler needs three config values — provide them via a `.env` file (in
@@ -318,12 +436,15 @@ Optional: `LABEL_PROVIDER` (`openai` | `anthropic`, default `openai`),
 Example invocations:
 
 ```bash
-# Step behavior labels using a .env file in the repo root
+# Preferred: full-index v2 sidecar
+python scripts/step_labeler_v2.py cc_trajectory.json --output cc_trajectory_labeled_v2.json
+
+# Compat CLI: assistant-only sidecar (still routes through v2)
 python scripts/step_labeler.py cc_trajectory.json --output cc_trajectory_labeled.json
 
 # Overriding config on the command line
-python scripts/step_labeler.py cc_trajectory.json \
-    --output cc_trajectory_labeled.json \
+python scripts/step_labeler_v2.py cc_trajectory.json \
+    --output cc_trajectory_labeled_v2.json \
     --base-url https://api.openai.com/v1 \
     --api-key sk-... \
     --model gpt-4o-mini

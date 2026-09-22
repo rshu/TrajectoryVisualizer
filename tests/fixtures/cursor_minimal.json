@@ -1,0 +1,187 @@
+{
+  "info": {
+    "id": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+    "title": "Cursor fixture",
+    "directory": "/workspace/demo",
+    "status": "completed",
+    "model": "grok-4.6",
+    "modelConfig": {"modelName": "grok-4.6", "maxMode": false},
+    "time": {"created": 1000, "updated": 5000},
+    "summary": {"additions": 3, "deletions": 1, "files": 1},
+    "promptTokenBreakdown": {
+      "totalUsedTokens": 1200,
+      "maxTokens": 256000,
+      "categories": [
+        {"id": "conversation", "label": "Conversation", "estimatedTokens": 900},
+        {"id": "tools", "label": "Tool definitions", "estimatedTokens": 300}
+      ]
+    },
+    "contextUsagePercent": 0.46875,
+    "subagentComposerIds": ["cccccccc-4444-5555-6666-dddddddddddd"]
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "id": "bubble-user",
+        "sessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+        "agent": "cursor",
+        "isSubAgent": false,
+        "sessionDepth": 0,
+        "time": {"created": 1000, "completed": 1000},
+        "tokens": {"input": 5, "output": 0, "total": 5, "context_window": 800}
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Inspect the project",
+          "id": "bubble-user:text:0",
+          "sessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+          "messageID": "bubble-user"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "bubble-asst",
+        "sessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+        "agent": "cursor",
+        "isSubAgent": false,
+        "sessionDepth": 0,
+        "modelID": "grok-4.6",
+        "finish": "success",
+        "time": {"created": 1000, "completed": 2500, "thinkingMs": 400},
+        "tokens": {"input": 6, "output": 20, "total": 26, "context_window": 800}
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Reading and delegating",
+          "id": "bubble-asst:text:0",
+          "sessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+          "messageID": "bubble-asst"
+        },
+        {
+          "type": "tool",
+          "tool": "Read",
+          "callID": "call-read",
+          "state": {
+            "status": "completed",
+            "input": {"path": "/workspace/demo/app.py"},
+            "output": "{\"totalLinesInFile\": 40}",
+            "metadata": {"totalDurationMs": 200},
+            "time": {"start": 2100, "end": 2300}
+          },
+          "id": "call-read",
+          "sessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+          "messageID": "bubble-asst"
+        },
+        {
+          "type": "tool",
+          "tool": "Task",
+          "callID": "call-task",
+          "state": {
+            "status": "completed",
+            "input": {"prompt": "explore", "subagent_type": "explore"},
+            "output": "",
+            "metadata": {
+              "sessionId": "cccccccc-4444-5555-6666-dddddddddddd",
+              "parentSessionId": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+            }
+          },
+          "id": "call-task",
+          "sessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+          "messageID": "bubble-asst"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "child-user",
+        "sessionID": "cccccccc-4444-5555-6666-dddddddddddd",
+        "agent": "cursor (subagent)",
+        "isSubAgent": true,
+        "sessionDepth": 1,
+        "parentSessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "explore",
+          "id": "child-user:text:0",
+          "sessionID": "cccccccc-4444-5555-6666-dddddddddddd",
+          "messageID": "child-user"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "child-asst",
+        "sessionID": "cccccccc-4444-5555-6666-dddddddddddd",
+        "agent": "cursor (subagent)",
+        "isSubAgent": true,
+        "sessionDepth": 1,
+        "parentSessionID": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+        "finish": "success"
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "Grep",
+          "callID": "call-grep",
+          "state": {
+            "status": "unknown",
+            "input": {"path": "/workspace/demo", "pattern": "TODO"},
+            "output": "",
+            "metadata": {}
+          },
+          "id": "call-grep",
+          "sessionID": "cccccccc-4444-5555-6666-dddddddddddd",
+          "messageID": "child-asst"
+        }
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "id": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+      "parent_id": null,
+      "depth": 0,
+      "title": "Cursor fixture",
+      "transcript_path": "parent.jsonl",
+      "message_count": 2
+    },
+    {
+      "id": "cccccccc-4444-5555-6666-dddddddddddd",
+      "parent_id": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+      "depth": 1,
+      "title": "",
+      "transcript_path": "child.jsonl",
+      "message_count": 2
+    }
+  ],
+  "statistics": {
+    "sessions": 2,
+    "subagent_sessions": 1,
+    "total_messages": 4,
+    "user_messages": 2,
+    "assistant_messages": 2,
+    "tool_parts": 3,
+    "tool_parts_with_output": 1
+  },
+  "export_metadata": {
+    "schema_version": 1,
+    "source_format": "cursor_composer",
+    "generator_name": "cursor_consolidator",
+    "generated_at": "2026-09-17T00:00:00Z",
+    "chat_id": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+    "transcript_path": "parent.jsonl",
+    "database_path": "state.vscdb",
+    "token_semantics": "context_window_snapshot+estimated_log_tokens",
+    "complete": true,
+    "warnings": []
+  }
+}

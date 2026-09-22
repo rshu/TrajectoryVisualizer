@@ -320,9 +320,25 @@ class XssTests(unittest.TestCase):
 
     def test_todowrite_content_escaped(self):
         out = rendering.build_antipattern_summary_html(
-            [], [], {"stalled": [{"content": "</span>" + self.PAYLOAD}]}, 0)
+            [], [], {"stalled": [{"content": "</span>" + self.PAYLOAD, "start_step": 4}]}, 0)
         self.assertNotIn("<img", out)
         self.assertIn("&lt;", out)
+        self.assertIn("tvGotoWorkflowStep(4)", out)
+        self.assertIn("#4", out)
+
+    def test_antipattern_summary_links_workflow_steps(self):
+        out = rendering.build_antipattern_summary_html(
+            [{"start_step": 10, "end_step": 12, "length": 3, "tools": ["Grep"]}],
+            [{"step": 7, "command": "cat /tmp/x", "pattern": "cat"}],
+            {"stalled": []},
+            error_count=2,
+            error_steps=[3, 9],
+        )
+        self.assertIn("Anti-pattern summary", out)
+        self.assertIn("insight-step-link", out)
+        for idx in (3, 7, 9, 10, 11, 12):
+            self.assertIn(f"tvGotoWorkflowStep({idx})", out)
+            self.assertIn(f"#{idx}", out)
 
     def test_metric_chip_escaped(self):
         chip = formatting._metric_chip(self.PAYLOAD, self.PAYLOAD)
@@ -340,6 +356,7 @@ class MetricsTests(unittest.TestCase):
         v = self._verdicts(m)["Throughput"]
         self.assertEqual(v["status"], "warn")
         self.assertIn("48.3", v["label"])
+        self.assertIn("gen tok/s", v["label"])
 
     def test_verdicts_na_on_missing_token_data(self):
         m = {"tokens": {"total": 0}, "avg_cache_ratio": 0, "output_tokens_per_sec": None,
@@ -353,7 +370,7 @@ class MetricsTests(unittest.TestCase):
                 "tokens": {"total": 100, "input": 100, "output": 0, "reasoning": 0, "cache_read": 0},
                 "parts": [], "tool_call_count": 1, "error_count": 0, "has_reasoning": False,
                 "text_preview": "", "finish": "", "model_id": "", "agent": "",
-                "tool_calls": [{"tool_name": "Task", "time_start": None, "time_end": None,
+                "tool_calls": [{"tool_name": "Bash", "time_start": None, "time_end": None,
                                 "duration_ms": None, "metadata": {"totalDurationMs": 8000}}]}
         sa = compute_step_analytics([step])[0]
         self.assertEqual(sa["tool_time_share"], 0.8)
@@ -404,6 +421,74 @@ class PatternsDiagnosticsTests(unittest.TestCase):
         targets = diagnostics.identify_target_files(steps)
         m = diagnostics.compute_file_targeting_metrics(inter, targets, len(steps))
         self.assertTrue(m["steps_to_first_touch"])
+
+    def test_skill_tool_and_skill_md_are_skill_interactions(self):
+        steps = [
+            {"index": 0, "role": "assistant", "tokens": {"total": 10}, "parts": [],
+             "tool_calls": [{"tool_name": "Skill", "input": {"skill": "create-hook"},
+                             "status": "completed"}]},
+            {"index": 1, "role": "assistant", "tokens": {"total": 10}, "parts": [],
+             "tool_calls": [{"tool_name": "Read",
+                             "input": {"file_path": "/home/user/.cursor/skills/canvas/SKILL.md"},
+                             "status": "completed"}]},
+            {"index": 2, "role": "assistant", "tokens": {"total": 10}, "parts": [],
+             "tool_calls": [{"tool_name": "Read", "input": {"file_path": "/repo/app.py"},
+                             "status": "completed"}]},
+            {"index": 3, "role": "assistant", "tokens": {"total": 10}, "parts": [],
+             "tool_calls": [{"tool_name": "Write",
+                             "input": {"file_path": "/repo/.cursor/skills/new/SKILL.md"},
+                             "status": "completed"}]},
+        ]
+        inter = diagnostics.extract_file_interactions(steps)
+        by_step = {i["step"]: i for i in inter}
+        self.assertEqual(by_step[0]["type"], "skill")
+        self.assertEqual(by_step[0]["path"], "skill:create-hook")
+        self.assertEqual(by_step[1]["type"], "skill")
+        self.assertTrue(by_step[1]["path"].endswith("SKILL.md"))
+        self.assertEqual(by_step[2]["type"], "read")
+        self.assertEqual(by_step[3]["type"], "write")
+
+        from trajviz.insight.charts import build_file_interaction_chart
+
+        fig = build_file_interaction_chart(inter)
+        names = {t.name for t in fig.data}
+        self.assertIn("skill (star)", names)
+        self.assertIn("read (circle)", names)
+        self.assertIn("write (square)", names)
+        skill_trace = next(t for t in fig.data if t.name == "skill (star)")
+        self.assertEqual(skill_trace.marker.symbol, "star")
+        self.assertIn("skill:create-hook", list(skill_trace.y))
+        write_trace = next(t for t in fig.data if t.name == "write (square)")
+        self.assertEqual(write_trace.marker.symbol, "square")
+
+    def test_multi_agent_file_legend_explains_marker_shapes(self):
+        from trajviz.insight.charts import build_file_interaction_chart
+
+        interactions = [
+            {"step": 0, "path": "/repo/a.py", "type": "read", "tool": "Read", "tokens": 1},
+            {"step": 1, "path": "/repo/a.py", "type": "write", "tool": "Edit", "tokens": 1},
+            {"step": 1, "path": "/repo", "type": "search", "tool": "Grep", "tokens": 1},
+            {"step": 2, "path": "skill:create-hook", "type": "skill", "tool": "Skill", "tokens": 1},
+        ]
+        steps = [
+            {"index": 0, "role": "assistant", "agent": "build", "is_sub_agent": False,
+             "session_id": "ses_root", "tokens": {"total": 1}, "tool_call_count": 1},
+            {"index": 1, "role": "assistant", "agent": "explore", "is_sub_agent": True,
+             "session_id": "ses_ex", "tokens": {"total": 1}, "tool_call_count": 1},
+            {"index": 2, "role": "assistant", "agent": "explore", "is_sub_agent": True,
+             "session_id": "ses_ex", "tokens": {"total": 1}, "tool_call_count": 1},
+        ]
+        fig = build_file_interaction_chart(interactions, steps=steps)
+        names = {t.name for t in fig.data if t.showlegend is not False}
+        self.assertIn("read (circle)", names)
+        self.assertIn("write (square)", names)
+        self.assertIn("search (triangle)", names)
+        self.assertIn("skill (star)", names)
+        by_name = {t.name: t for t in fig.data}
+        self.assertEqual(by_name["read (circle)"].marker.symbol, "circle")
+        self.assertEqual(by_name["write (square)"].marker.symbol, "square")
+        self.assertEqual(by_name["search (triangle)"].marker.symbol, "triangle-up")
+        self.assertEqual(by_name["skill (star)"].marker.symbol, "star")
 
     def test_hotspot_inference_excludes_pre_step_idle(self):
         step = {"index": 0, "role": "assistant", "duration": 20.0,

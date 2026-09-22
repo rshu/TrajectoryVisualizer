@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from trajviz.tool_vocab import WRITE_TOOL_NAMES as _WRITE_TOOLS
+from trajviz.tool_vocab import BASH_TOOL_NAMES as _BASH_TOOLS, WRITE_TOOL_NAMES as _WRITE_TOOLS
 # Shared single-source helpers (C8/C9): validation-command detection lives in
 # insight/patterns.py and bash path extraction in insight/diagnostics.py (the
 # quoted + Windows-drive-aware implementation). Both modules import only
@@ -60,15 +60,16 @@ class CanonicalAction:
 
 _READ_TOOLS = {"Read", "read"}
 _SEARCH_TOOLS = {"Glob", "glob", "Grep", "grep", "find", "ToolSearch"}
-_BASH_TOOLS = {"Bash", "bash", "BashCommand"}
-_SPAWN_TOOLS = {"Agent", "agent"}
+# Native spawn names plus DSH leftovers if the loader did not map them to Agent.
+# Do not include Claude Code ``Task`` — that would recategorize non-DSH runs.
+_SPAWN_TOOLS = {"Agent", "agent", "subagent", "subagent_fork"}
 _PLANNING_TOOLS = {"todowrite", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"}
 # Navigation/utility commands excluded from alignment (like REASON)
 _NAVIGATION_COMMANDS = {"cd", "pwd", "ls", "echo", "export", "set", "source"}
 
 # sed/awk read by default (B22): `sed -n '1,50p' file` is a view, not a write.
 # Only explicit in-place flags (see _is_in_place_edit) make them writes,
-# mirroring the Codex mapping in insight/loaders.py.
+# mirroring the Codex mapping in insight/formats/codex.py.
 _FUZZY_KEYWORDS: dict[str, str] = {
     "grep": "SEARCH", "rg": "SEARCH", "ag": "SEARCH", "find": "SEARCH",
     "cat": "FILE_READ", "head": "FILE_READ", "tail": "FILE_READ", "less": "FILE_READ",
@@ -92,16 +93,24 @@ def _is_in_place_edit(base_cmd: str, command: str) -> bool:
     return False
 
 
+_WSL_UNC_RE = re.compile(
+    r"(?i)^(?://*)(?:wsl\.localhost|wsl\$)/[^/]+(/home/.*)$"
+)
+
+
 def _normalize_target(path: str) -> str:
     """Normalize a file path for comparison.
 
-    Handles cross-platform paths (Windows backslashes → forward slashes)
-    and strips drive letters for portability.
+    Handles Windows backslashes, drive letters, and WSL UNC shares
+    (``\\\\wsl.localhost\\Ubuntu-26.04\\home\\...`` → ``/home/...``).
     """
     if not path:
         return path
     import posixpath
-    p = path.replace("\\", "/")
+    p = path.strip().replace("\\", "/")
+    match = _WSL_UNC_RE.match(p)
+    if match:
+        p = match.group(1)
     if len(p) >= 2 and p[1] == ":" and p[0].isalpha():
         p = p[2:]
     return posixpath.normpath(p)

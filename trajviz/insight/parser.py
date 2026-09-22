@@ -1,49 +1,22 @@
 """Data loading, parsing, and aggregate metrics."""
 
-# Re-export loader functions for backward compatibility
-from .loaders import (  # noqa: F401
-    safe_get,
-    detect_format,
-    load_trajectory,
-)
+from .loaders import safe_get
 
-# Re-export metric functions for backward compatibility
-from .metrics import (  # noqa: F401
-    build_message_metrics,
-    compute_metrics,
-    compute_health_verdict,
-    validate_token_integrity,
-    extract_agent_info,
-    compute_agent_summary,
-    generate_agent_insights,
-    effective_agent,
-)
-
-# Re-export formatting functions for backward compatibility
-from .formatting import (  # noqa: F401
-    format_performance_md,
-    format_behavioral_md,
-    format_banner_html,
-    wall_clock_fmt,
-    _build_hotspots_md,
-    _build_per_message_md,
-    _friendly_finish,
-)
-
-# Re-export label functions for backward compatibility
-from .labels import (  # noqa: F401
-    LABEL_PHASE_COLORS,
-    load_labeled_json,
-    aggregate_labels,
-)
-
-
+# Fields whose absence makes the whole Metrics table unavailable. Reasoning is
+# optional: many formats never report it (show per-row N/A instead of fake 0).
 _TOKEN_METRIC_FIELDS = {
     "total": "Total Tokens",
     "input": "Input Tokens",
     "output": "Output Tokens",
-    "reasoning": "Reasoning Tokens",
 }
+
+
+def _optional_token_count(tokens: dict, key: str) -> int | None:
+    """Return an int token count when *key* was reported, else None."""
+    value = tokens.get(key)
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
 
 
 def _missing_token_metric_fields(tokens_info: dict) -> list[str]:
@@ -140,6 +113,7 @@ def _parse_parts(parts_raw: list) -> tuple[list, list, int, bool, str]:
             status = state.get("status", p.get("status", "?"))
             tool_input = state.get("input", p.get("input", p.get("arguments", {})))
             tool_output = state.get("output", p.get("output", ""))
+            compacted_at = safe_get(state, "time", "compacted", default=None)
             tc = {
                 "type": "tool_call", "tool_name": tool_name,
                 "tool_id": p.get("tool_id", p.get("callID", p.get("id", ""))), "status": status,
@@ -148,8 +122,11 @@ def _parse_parts(parts_raw: list) -> tuple[list, list, int, bool, str]:
                 "output": tool_output,
                 "error": p.get("error") or state.get("error") or None,
                 "error_type": p.get("error_type"),
+                "time_created": safe_get(p, "time", "created", default=None),
+                "time_updated": safe_get(p, "time", "updated", default=None),
                 "time_start": safe_get(state, "time", "start", default=None),
                 "time_end": safe_get(state, "time", "end", default=None),
+                "time_compacted": compacted_at,
                 "duration_ms": safe_get(state, "metadata", "totalDurationMs", default=None),
                 "metadata": state.get("metadata", {}),
                 "part_id": p.get("id", ""),
@@ -177,6 +154,22 @@ def _parse_parts(parts_raw: list) -> tuple[list, list, int, bool, str]:
                 "time": p.get("time", {}) if isinstance(p.get("time"), dict) else {},
                 "part_id": p.get("id", ""),
             })
+        elif ptype == "compaction":
+            summary_text = p.get("summary") or p.get("text") or ""
+            if not isinstance(summary_text, str):
+                summary_text = str(summary_text) if summary_text else ""
+            parts.append({
+                "type": "compaction",
+                "summary": summary_text,
+                "reason": p.get("reason", ""),
+                "recent": p.get("recent", ""),
+                "time": p.get("time", {}) if isinstance(p.get("time"), dict) else {},
+                "part_id": p.get("id", ""),
+                "session_id": p.get("sessionID", ""),
+                "message_id": p.get("messageID", ""),
+            })
+            if not text_preview and summary_text:
+                text_preview = summary_text
         elif ptype == "snapshot":
             parts.append({"type": "snapshot", "data": p.get("data", p.get("snapshot", {}))})
         elif ptype == "patch":
@@ -216,26 +209,44 @@ def parse_steps(raw: dict) -> list[dict]:
         if not isinstance(msg, dict):
             continue
         info = msg.get("info") if isinstance(msg.get("info"), dict) else {}
-        role = msg.get("role") or safe_get(info, "role", default="?")
+        message_type = msg.get("type") or info.get("type") or ""
+        if not isinstance(message_type, str):
+            message_type = ""
+        is_compaction_checkpoint = message_type == "compaction"
+        role = msg.get("role") or safe_get(info, "role", default="")
+        if not role:
+            role = "compaction" if is_compaction_checkpoint else "?"
+        summary_flag = info.get("summary", False)
 
         tokens_info = safe_get(info, "tokens", default={})
         if not isinstance(tokens_info, dict):
             tokens_info = {}
         metrics_unavailable_fields = _missing_token_metric_fields(tokens_info)
         metrics_source_format = ""
+        reasoning = _optional_token_count(tokens_info, "reasoning")
         tokens = {
             "total": tokens_info.get("total", 0) or 0,
             "input": tokens_info.get("input", 0) or 0,
             "output": tokens_info.get("output", 0) or 0,
-            "reasoning": tokens_info.get("reasoning", 0) or 0,
             "cache_read": safe_get(tokens_info, "cache", "read", default=0) or 0,
             "cache_write": safe_get(tokens_info, "cache", "write", default=0) or 0,
         }
+        if reasoning is not None:
+            tokens["reasoning"] = reasoning
+        # Formats that log per-message window contributions (ICode) resolve
+        # the live context-window occupancy in their converter; per-step
+        # totals are that step's own tokens, not the window size.
+        window = _optional_token_count(tokens_info, "context_window")
+        if window is not None and window >= 0:
+            tokens["context_window"] = window
 
         t_created = safe_get(info, "time", "created", default=None)
         t_completed = safe_get(info, "time", "completed", default=None)
         duration = None
-        if isinstance(t_created, (int, float)) and isinstance(t_completed, (int, float)):
+        if (
+            isinstance(t_created, (int, float)) and t_created > 0
+            and isinstance(t_completed, (int, float))
+        ):
             duration = round((t_completed - t_created) / 1000.0, 2)
 
         raw_parts = msg.get("parts", [])
@@ -270,12 +281,118 @@ def parse_steps(raw: dict) -> list[dict]:
             "parent_session_id": info.get("parentSessionID", ""),
             "session_depth": info.get("sessionDepth"),
             "session_title": info.get("sessionTitle", ""),
+            "summary": summary_flag,
+            "message_type": message_type,
+            "is_compaction_checkpoint": is_compaction_checkpoint,
+            "compaction_reason": info.get("reason", "") if is_compaction_checkpoint else "",
             "_metrics_unavailable_fields": metrics_unavailable_fields,
             "_metrics_source_format": metrics_source_format,
         })
 
     _fill_missing_last_step_duration(steps, raw)
+    _annotate_spawned_subagents(steps, raw)
     return steps
+
+
+def spawned_child_session_id(
+    metadata: object,
+    *,
+    caller_session_id: str = "",
+    root_session_id: str = "",
+) -> str:
+    """Child session id from Task-tool metadata, or '' if this is not a spawn.
+
+    Ignores self-spawns and (when given) the trajectory root session, which
+    nested tool parts sometimes echo incorrectly.
+    """
+    if not isinstance(metadata, dict):
+        return ""
+    child_id = (
+        metadata.get("sessionId")
+        or metadata.get("sessionID")
+        or metadata.get("session_id")
+    )
+    if not isinstance(child_id, str) or not child_id:
+        return ""
+    if caller_session_id and child_id == caller_session_id:
+        return ""
+    if root_session_id and child_id == root_session_id:
+        return ""
+    return child_id
+
+
+def _annotate_spawned_subagents(steps: list[dict], raw: dict | None = None) -> None:
+    """Mark child sessions spawned via Task/agent tools as sub-agents.
+
+    OpenCode exports often leave ``isSubAgent`` unset on child messages while
+    recording ``metadata.sessionId`` / ``parentSessionId`` on the parent's
+    task tool part. Infer those links so timelines, agent cards, and
+    sub-agent session grouping see the real hierarchy.
+
+    Never treats the trajectory root session as a spawned child (nested tool
+    parts can incorrectly echo the parent session id).
+    """
+    root_sid = ""
+    if isinstance(raw, dict):
+        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        candidate = info.get("id") or ""
+        if isinstance(candidate, str):
+            root_sid = candidate
+    if not root_sid:
+        for step in steps:
+            if isinstance(step, dict) and step.get("session_id"):
+                root_sid = str(step["session_id"])
+                break
+
+    child_to_parent: dict[str, str] = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        parent_sid = step.get("session_id") or ""
+        for tc in step.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            meta = tc.get("metadata") if isinstance(tc.get("metadata"), dict) else {}
+            child_id = spawned_child_session_id(
+                meta,
+                caller_session_id=str(parent_sid or ""),
+                root_session_id=root_sid,
+            )
+            if not child_id:
+                continue
+            parent_from_meta = (
+                meta.get("parentSessionId")
+                or meta.get("parentSessionID")
+                or meta.get("parent_session_id")
+                or parent_sid
+            )
+            if (
+                isinstance(parent_from_meta, str)
+                and parent_from_meta
+                and parent_sid
+                and parent_from_meta != parent_sid
+            ):
+                # Metadata disagrees with the calling session — skip.
+                continue
+            if child_id not in child_to_parent:
+                child_to_parent[child_id] = (
+                    parent_from_meta if isinstance(parent_from_meta, str) else ""
+                )
+
+    if not child_to_parent:
+        return
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        sid = step.get("session_id") or ""
+        if sid not in child_to_parent:
+            continue
+        step["is_sub_agent"] = True
+        if not step.get("parent_session_id"):
+            parent = child_to_parent[sid]
+            if parent:
+                step["parent_session_id"] = parent
 
 
 def _fill_missing_last_step_duration(steps: list[dict], raw: dict) -> None:
@@ -293,7 +410,7 @@ def _fill_missing_last_step_duration(steps: list[dict], raw: dict) -> None:
     if last.get("duration") is not None:
         return
     start_ms = last.get("time_created_ms")
-    if not isinstance(start_ms, (int, float)):
+    if not isinstance(start_ms, (int, float)) or start_ms <= 0:
         return
 
     # Prefer the session's finished_at timestamp (authoritative when present).

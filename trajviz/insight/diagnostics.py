@@ -1,17 +1,20 @@
-"""Trajectory diagnostics: file interaction, failure chains, root-cause attribution, bottleneck explanation."""
+"""Trajectory diagnostics: file interaction, failure chains, root-cause attribution, performance bottlenecks."""
 
 from __future__ import annotations
 
-from trajviz.tool_vocab import (WRITE_TOOL_NAMES as _WRITE_TOOL_SET,
-                                write_target_path as _write_target_path)
+from trajviz.tool_vocab import (
+    BASH_TOOL_NAMES,
+    WRITE_TOOL_NAMES as _WRITE_TOOL_SET,
+    parse_skill_name as _parse_skill_name,
+    write_target_path as _write_target_path,
+)
 
 import os
 import re
+import statistics
 
-# Tool-call statuses that open/continue a failure chain. Shared by
-# _step_has_error, classify_chain_steps, and cluster_errors so the chain
-# detector and the chain classifier can never drift apart again.
-_ERROR_STATUSES = ("error", "failed", "failure", "cancelled", "timeout")
+from .shell_cmd import tool_chart_name
+from .tool_failure import tool_call_error_kind, tool_call_failed
 
 
 # ---------------------------------------------------------------------------
@@ -24,12 +27,12 @@ _TOOL_FILE_FIELDS: dict[str, tuple[tuple[str, ...], str]] = {
     # Multiple keys per tool let us handle scaffolds that use different field
     # spellings — e.g. Claude Code emits ``file_path`` (snake) while OpenCode
     # emits ``filePath`` (camel). The lookup picks whichever the call carries.
-    "Read":         (("file_path", "filePath"), "read"),
-    "read":         (("file_path", "filePath"), "read"),
-    "Write":        (("file_path", "filePath"), "write"),
-    "write":        (("file_path", "filePath"), "write"),
-    "Edit":         (("file_path", "filePath"), "write"),
-    "edit":         (("file_path", "filePath"), "write"),
+    "Read":         (("file_path", "filePath", "path"), "read"),
+    "read":         (("file_path", "filePath", "path"), "read"),
+    "Write":        (("file_path", "filePath", "path"), "write"),
+    "write":        (("file_path", "filePath", "path"), "write"),
+    "Edit":         (("file_path", "filePath", "path"), "write"),
+    "edit":         (("file_path", "filePath", "path"), "write"),
     "NotebookEdit": (("notebook_path", "notebookPath"), "write"),
 }
 
@@ -72,11 +75,17 @@ def _extract_bash_paths(command: str) -> list[str]:
     return paths
 
 
+def _is_skill_definition_path(path: str) -> bool:
+    """True when *path* is a skill definition file (``SKILL.md``)."""
+    name = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return bool(name) and name.lower() == "skill.md"
+
+
 def extract_file_interactions(steps: list[dict]) -> list[dict]:
     """Extract file path references from every tool call in parsed steps.
 
     Returns a list of records: {step, tool, path, type, tokens}
-    where type is one of: read, write, search.
+    where type is one of: read, write, search, skill.
     """
     interactions: list[dict] = []
 
@@ -115,7 +124,7 @@ def extract_file_interactions(steps: list[dict]) -> list[dict]:
                         found_paths.append((str(pattern), itype))
 
             # Bash — heuristic path extraction
-            elif tool_name in ("Bash", "bash", "BashCommand"):
+            elif tool_name in BASH_TOOL_NAMES:
                 command = inp.get("command", "")
                 if command:
                     for p in _extract_bash_paths(command):
@@ -125,9 +134,15 @@ def extract_file_interactions(steps: list[dict]) -> list[dict]:
                         itype = "write" if any(command.strip().startswith(c) or f" {c}" in command for c in write_cmds) else "read"
                         found_paths.append((p, itype))
 
+            skill = _parse_skill_name(tool_name, inp)
+            if skill:
+                found_paths.append((f"skill:{skill}", "skill"))
+
             for path, itype in found_paths:
                 # Normalize backslashes to forward slashes for consistency
                 path = path.replace("\\", "/")
+                if itype == "read" and _is_skill_definition_path(path):
+                    itype = "skill"
                 interactions.append({
                     "step": step_idx,
                     "tool": tool_name,
@@ -257,17 +272,10 @@ def compute_file_targeting_metrics(
 # ---------------------------------------------------------------------------
 
 def _step_has_error(step: dict) -> bool:
-    """Check if a step has at least one error tool call or non-zero exit code."""
+    """Check if a step has at least one failed tool call."""
     if step.get("error_count", 0) > 0:
         return True
-    for tc in step.get("tool_calls", []):
-        status = tc.get("status", "")
-        if status in _ERROR_STATUSES:
-            return True
-        meta = tc.get("metadata", {})
-        if isinstance(meta, dict) and meta.get("exit") not in (None, 0):
-            return True
-    return False
+    return any(tool_call_failed(tc) for tc in step.get("tool_calls", []))
 
 
 def _error_tool_target(tc: dict) -> tuple[str, str]:
@@ -329,12 +337,10 @@ def classify_chain_steps(chain: dict, steps: list[dict]) -> list[dict]:
     first_step = step_map.get(chain_steps[0], {})
     first_error_sigs = set()
     for tc in first_step.get("tool_calls", []):
-        # Same status set as _step_has_error: a chain opened by a cancelled or
+        # Same predicate as _step_has_error: a chain opened by a cancelled or
         # timed-out call must still yield first-error signatures, or identical
         # retries would all be classified "cascade".
-        if tc.get("status") in _ERROR_STATUSES or (
-            isinstance(tc.get("metadata"), dict) and tc["metadata"].get("exit") not in (None, 0)
-        ):
+        if tool_call_failed(tc):
             first_error_sigs.add(_error_tool_target(tc))
 
     result = [{"step_idx": chain_steps[0], "classification": "first_error"}]
@@ -435,29 +441,31 @@ def _error_pattern(tc: dict) -> str:
 
 
 def cluster_errors(steps: list[dict]) -> list[dict]:
-    """Group error tool calls by (tool_name, error_pattern).
+    """Group error tool calls by (display tool, error_pattern).
+
+    Bash/shell calls are labeled with the peeled base command (via
+    :func:`trajviz.insight.shell_cmd.tool_chart_name`) so ``npm test`` failures
+    do not collapse into a generic ``Bash: exit code`` cluster.
 
     Returns sorted list of cluster dicts:
-    {tool, pattern, count, steps: [step_indices], first_step, last_step}
+    ``{tool, error_class, pattern, count, steps, first_step, last_step}``
+    where ``error_class`` is ``"system"`` (scaffold) or ``"tool"`` (agentic).
     """
     clusters: dict[tuple[str, str], dict] = {}
 
     for step in steps:
         for tc in step.get("tool_calls", []):
-            is_error = (
-                tc.get("status") in _ERROR_STATUSES
-                or (isinstance(tc.get("metadata"), dict) and tc["metadata"].get("exit") not in (None, 0))
-            )
-            if not is_error:
+            if not tool_call_failed(tc):
                 continue
 
-            tool = tc.get("tool_name", "unknown")
+            display = tool_chart_name(tc)
             pattern = _error_pattern(tc)
-            key = (tool, pattern)
+            key = (display, pattern)
 
             if key not in clusters:
                 clusters[key] = {
-                    "tool": tool,
+                    "tool": display,
+                    "error_class": tool_call_error_kind(tc),
                     "pattern": pattern,
                     "count": 0,
                     "steps": [],
@@ -635,37 +643,176 @@ def explain_hotspot(step: dict, decomposition: dict) -> str:
     return f"Step {idx}: {dur:.1f}s \u2014 {', '.join(parts)}{incomplete}"
 
 
-def compute_bottleneck_explanations(
+# ---------------------------------------------------------------------------
+# 4b. Performance bottlenecks (outlier + actionable cause)
+# ---------------------------------------------------------------------------
+
+_BN_MIN_ABS_S = 8.0
+_BN_MIN_IDLE_S = 10.0
+_BN_MIN_TOOL_S = 5.0
+_BN_MIN_INFERENCE_S = 15.0
+_BN_MAX_ISSUES = 3
+
+
+def _duration_outlier_threshold(durations: list[float]) -> float:
+    """Session-relative floor: absolute minimum, or median×2 / mean+1.5σ when possible."""
+    if not durations:
+        return _BN_MIN_ABS_S
+    from .metrics import _percentile
+
+    median = float(statistics.median(durations))
+    p90 = float(_percentile(durations, 0.90))
+    floor = max(_BN_MIN_ABS_S, median * 2.0, p90)
+
+    if len(durations) >= 8:
+        mean = statistics.mean(durations)
+        try:
+            stdev = statistics.stdev(durations)
+        except statistics.StatisticsError:
+            stdev = 0.0
+        if stdev > 0:
+            sigma = mean + 1.5 * stdev
+            # Prefer the stricter of relative floors so uniform slow runs stay quiet.
+            floor = max(_BN_MIN_ABS_S, min(floor, max(median * 2.0, sigma)))
+    return floor
+
+
+def _classify_performance_cause(
+    decomp: dict,
+    step: dict,
+    analytics_row: dict | None,
+) -> str | None:
+    """Return cause key if the dominant component is an actionable bottleneck."""
+    idle_pct = float(decomp.get("idle_pct") or 0)
+    tool_pct = float(decomp.get("tool_pct") or 0)
+    inf_pct = float(decomp.get("inference_pct") or 0)
+    idle_s = float(decomp.get("idle_s") or 0)
+    tool_s = float(decomp.get("tool_s") or 0)
+    inference_s = float(decomp.get("inference_s") or 0)
+
+    # Idle/queue first — often the true wall-clock bottleneck and distinct from step work.
+    if idle_pct >= 40 and idle_s >= _BN_MIN_IDLE_S:
+        return "idle"
+
+    if tool_pct >= 50 and tool_s >= _BN_MIN_TOOL_S:
+        return "tool"
+
+    if inf_pct >= 50 and inference_s >= _BN_MIN_INFERENCE_S:
+        tokens = step.get("tokens") or {}
+        tok_total = int(tokens.get("total") or 0) if isinstance(tokens, dict) else 0
+        cache_ratio = None
+        if analytics_row is not None:
+            cache_ratio = analytics_row.get("cache_ratio")
+        # Context waste: large prompt and/or weak cache hit rate.
+        if tok_total >= 40_000 or (
+            cache_ratio is not None and tok_total > 0 and float(cache_ratio) < 0.35
+        ):
+            return "context"
+        # Extremely long model-side turn even without cache signal.
+        if inference_s >= 30:
+            return "inference"
+
+    return None
+
+
+def detect_performance_bottlenecks(
     steps: list[dict],
     step_analytics: list[dict],
-    n: int = 5,
+    *,
+    max_issues: int = _BN_MAX_ISSUES,
 ) -> list[dict]:
-    """Compute duration decomposition and explanation for top-N hotspot steps.
+    """Detect real performance bottlenecks (outlier + clear cause).
 
-    Returns list of {step_idx, duration, decomposition, explanation} dicts.
+    Requires the step to exceed a session-relative duration floor **and** have
+    a dominant actionable cause: idle/queue, tool wait, or context/inference.
+    Prefer this over duration top-N rankings for Issues, KPI, and analysis.
+
+    Returns
+    -------
+    list[dict]
+        ``step_idx``, ``duration``, ``cause``, ``title``, ``detail``, ``why``,
+        ``decomposition``, ``explanation``.
     """
-    # Find top-N assistant steps by duration
-    asst = [s for s in steps if s.get("role") == "assistant" and s.get("duration")]
-    asst.sort(key=lambda s: -(s.get("duration") or 0))
-    hotspots = asst[:n]
+    asst = [
+        s for s in steps
+        if s.get("role") == "assistant" and isinstance(s.get("duration"), (int, float))
+        and float(s["duration"]) > 0
+    ]
+    if not asst:
+        return []
 
-    # Build analytics lookup
+    durations = [float(s["duration"]) for s in asst]
+    threshold = _duration_outlier_threshold(durations)
     analytics_map = {a["index"]: a for a in step_analytics}
 
-    results: list[dict] = []
-    for step in hotspots:
-        idx = step["index"]
+    candidates: list[dict] = []
+    for step in asst:
+        duration = float(step["duration"])
+        idx = int(step["index"])
         analytics_row = analytics_map.get(idx)
         idle_gap = analytics_row.get("idle_before_s") if analytics_row else None
-
+        idle_for_impact = max(0.0, float(idle_gap or 0))
+        # Idle gaps sit outside step.duration; include them so queue stalls qualify.
+        if duration + idle_for_impact < threshold:
+            continue
         decomp = decompose_hotspot_duration(step, analytics_row, idle_gap)
-        explanation = explain_hotspot(step, decomp)
+        cause = _classify_performance_cause(decomp, step, analytics_row)
+        if cause is None:
+            continue
 
-        results.append({
+        explanation = explain_hotspot(step, decomp)
+        dt = decomp.get("dominant_tool") or {}
+        tool_name = str(dt.get("name") or "tool")
+        tool_target = str(dt.get("target") or "")
+        tool_s = float(decomp.get("tool_s") or 0)
+        idle_s = float(decomp.get("idle_s") or 0)
+
+        if cause == "idle":
+            title = f"Idle/queue bottleneck before #{idx} ({idle_s:.0f}s gap)"
+            detail = explanation[:200]
+            why = (
+                "Large pre-step idle usually means queuing or rate limiting — "
+                "reduce parallel pressure or wait policy rather than changing prompts."
+            )
+        elif cause == "tool":
+            label = f"{tool_name}: {tool_target}" if tool_target else tool_name
+            short = label if len(label) <= 40 else (label[:37] + "…")
+            title = f"Tool bottleneck: {short} ({tool_s:.1f}s)"
+            detail = explanation[:200]
+            why = (
+                "Most of this outlier step was spent in a tool — prefer cheaper tools, "
+                "narrower scopes, or caching results instead of repeating heavy calls."
+            )
+        elif cause == "context":
+            title = f"Context/cache bottleneck at #{idx} ({duration:.1f}s)"
+            detail = explanation[:200]
+            why = (
+                "Long inference with heavy tokens or weak cache hits — trim context, "
+                "improve cache locality, or avoid reloading large files each turn."
+            )
+        else:  # inference
+            title = f"Inference bottleneck at #{idx} ({duration:.1f}s)"
+            detail = explanation[:200]
+            why = (
+                "Outlier model-side turn with little tool wait — often oversized "
+                "reasoning or prompt; tighten instructions or split the task."
+            )
+
+        candidates.append({
             "step_idx": idx,
-            "duration": step.get("duration", 0),
+            "duration": duration,
+            "cause": cause,
+            "title": title,
+            "detail": detail,
+            "why": why,
             "decomposition": decomp,
             "explanation": explanation,
         })
 
-    return results
+    # Prefer largest wall impact; for idle, use idle_s as secondary sort key via duration+idle.
+    def _impact(item: dict) -> float:
+        d = item["decomposition"]
+        return float(item["duration"]) + float(d.get("idle_s") or 0)
+
+    candidates.sort(key=_impact, reverse=True)
+    return candidates[:max_issues]

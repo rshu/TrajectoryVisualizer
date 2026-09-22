@@ -3,8 +3,6 @@
 import json
 import os
 
-from .palette import LABEL_PHASE_COLORS  # noqa: F401 — re-exported
-
 
 def load_labeled_json(path: str) -> dict:
     """Load and validate a *_labeled.json file.

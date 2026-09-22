@@ -9,40 +9,72 @@ from pygments import highlight as _pygments_highlight
 from pygments.formatters import HtmlFormatter as _HtmlFormatter
 from pygments.lexers import get_lexer_by_name as _get_lexer, TextLexer as _TextLexer
 
-from .charts import build_agent_color_map
+from .charts import bind_timeline_agents
+from .context_usage import PRESSURE_MAIN_AGENT, pressure_agent_key
+from .metrics import tool_call_duration_ms
 from .palette import AGENT_COLORS, AGENT_CSS_COLORS
+from .parser import _optional_token_count
+from .step_errors import step_error_kind
 from .styles import WORKFLOW_CSS
+from .workflow_role import workflow_role
 
 
 _ROLE_COLORS = {
     "user": ("var(--wf-bg-user)", "var(--wf-border-user)", "User"),
     "assistant": ("var(--wf-bg-assistant)", "var(--wf-border-assistant)", "Assistant"),
+    "task": ("var(--wf-bg-reasoning)", "var(--wf-border-reasoning)", "Task"),
+    "system": ("var(--wf-bg-default)", "var(--wf-border-default)", "System"),
+    "compaction": ("var(--wf-bg-default)", "var(--wf-border-default)", "Compaction"),
 }
 
 _ROLE_BADGE_STYLES = {
     "user": "background:var(--wf-border-user);color:white;",
     "assistant": "background:var(--wf-border-assistant);color:white;",
+    "task": "background:var(--wf-border-reasoning);color:white;",
     "system": "background:var(--wf-border-default);color:white;",
+    "compaction": "background:var(--wf-border-default);color:white;",
     "tool": "background:var(--wf-border-reasoning);color:white;",
 }
 
 
-def _card_style(step: dict) -> tuple[str, str, str]:
-    """Return (bg_color, border_color, label) for a step card.
+def workflow_role_label(step: dict) -> str:
+    """Human-readable Workflow role badge for *step*."""
+    role = workflow_role(step)
+    colors = _ROLE_COLORS.get(role)
+    if colors:
+        return colors[2]
+    return role.title() if role else ""
+
+
+def _card_style(step: dict) -> tuple[str, str, str, str | None]:
+    """Return (bg_color, border_color, label, error_kind) for a step card.
 
     Colors are CSS variable references so they adapt to the active theme.
+    ``error_kind`` is ``\"system\"``, ``\"tool\"``, or ``None``.
     """
-    role = str(step.get("role", ""))
-    if step["error_count"] > 0:
-        return "var(--wf-bg-error)", "var(--wf-border-error)", "Error"
+    stored = step.get("role", "")
+    stored_s = stored if isinstance(stored, str) else str(stored or "")
+    err_kind = step_error_kind(step)
+    if err_kind == "tool":
+        return "var(--wf-bg-error)", "var(--wf-border-error)", "Tool Error", err_kind
+    if err_kind == "system":
+        return (
+            "var(--wf-bg-system-error)",
+            "var(--wf-border-system-error)",
+            "System Error",
+            err_kind,
+        )
     if step.get("finish") == "stop" or step.get("finish") == "end_turn":
-        return "var(--wf-bg-final)", "var(--wf-border-final)", "Final"
+        return "var(--wf-bg-final)", "var(--wf-border-final)", "Final", None
     if step["tool_call_count"] > 0:
-        return "var(--wf-bg-tool)", "var(--wf-border-tool)", "Tool Calls"
-    if step["has_reasoning"] and role == "assistant":
-        return "var(--wf-bg-reasoning)", "var(--wf-border-reasoning)", "Reasoning"
-    bg, border, label = _ROLE_COLORS.get(role, ("var(--wf-bg-default)", "var(--wf-border-default)", role.title()))
-    return bg, border, label
+        return "var(--wf-bg-tool)", "var(--wf-border-tool)", "Tool Calls", None
+    if step["has_reasoning"] and stored_s == "assistant":
+        return "var(--wf-bg-reasoning)", "var(--wf-border-reasoning)", "Reasoning", None
+    role = workflow_role(step)
+    bg, border, label = _ROLE_COLORS.get(
+        role, ("var(--wf-bg-default)", "var(--wf-border-default)", role.title()),
+    )
+    return bg, border, label, None
 
 
 _CODE_FENCE_RE = re.compile(
@@ -113,6 +145,40 @@ def _md_to_html_preview(text: str) -> str:
 _ROLE_FILTER_CHIPS = ["Assistant", "User"]
 _FEATURE_FILTER_CHIPS = ["Tool Calls", "Errors", "Reasoning"]
 _ALL_FEATURE_FILTER = "All"
+AGENT_FILTER_PREFIX = "agent:"
+AGENT_ALL_FILTER = "agent:All"
+MAIN_AGENT_FILTER = f"{AGENT_FILTER_PREFIX}{PRESSURE_MAIN_AGENT}"
+
+
+def agent_filter_token(agent_id: str) -> str:
+    """CSV / chip token for a timeline agent id (empty id → main)."""
+    return f"{AGENT_FILTER_PREFIX}{pressure_agent_key(agent_id)}"
+
+
+def agent_id_from_filter_token(token: str) -> str | None:
+    """Parse an ``agent:<id>`` filter token to a timeline id.
+
+    Returns None for non-agent tokens and for ``agent:All``.
+    """
+    if not token.startswith(AGENT_FILTER_PREFIX):
+        return None
+    rest = token[len(AGENT_FILTER_PREFIX):]
+    if rest == "All":
+        return None
+    if rest == PRESSURE_MAIN_AGENT:
+        return ""
+    return rest
+
+
+def workflow_agent_chip_options(steps: list[dict]) -> list[tuple[str, str, int]]:
+    """``(token, label, color_index)`` for multi-agent Workflow chips, else []."""
+    color_map, labels, _agent_id_of = bind_timeline_agents(steps)
+    if len(color_map) <= 1:
+        return []
+    return [
+        (agent_filter_token(aid), labels[aid], idx)
+        for aid, idx in color_map.items()
+    ]
 
 
 def _render_one_agent_card(a: dict, agent_hex: str) -> str:
@@ -175,57 +241,111 @@ def render_agent_summary_cards(agent_summaries: list[dict]) -> str:
     return "<div class='agent-cards-grid'>" + "".join(cards) + "</div>"
 
 
-def render_filter_chips(active: list[str] | None = None) -> str:
-    """Render the two-level Workflow filter.
+def render_filter_chips(
+    active: list[str] | None = None,
+    *,
+    agent_options: list[tuple[str, str, int]] | None = None,
+) -> str:
+    """Render the Workflow filter chip panel.
 
-    Roles are a required multi-select (OR within the group).  Step features are
-    also ORed, while ``All`` means that no feature predicate is applied.  The
-    delegated browser handler enforces these states and combines the two groups
-    with AND semantics in the backend.
+    Roles are a required multi-select (OR within the group). Step features are
+    also ORed, while ``All`` means that no feature predicate is applied. When
+    *agent_options* is non-empty (multi-agent trajectories), a third Agent
+    group mirrors feature semantics with ``agent:All`` / ``agent:…`` tokens.
+    The delegated browser handler enforces these states; the backend ANDs the
+    groups together.
     """
+    agent_options = agent_options or []
     if active is None:
         active = [*_ROLE_FILTER_CHIPS, _ALL_FEATURE_FILTER]
+        if agent_options:
+            active = [*active, AGENT_ALL_FILTER]
     active_set = set(active)
 
-    def _chip(name: str, group: str, *, extra_class: str = "") -> str:
+    def _chip(
+        *,
+        data_filter: str,
+        label: str,
+        group: str,
+        extra_class: str = "",
+        style: str = "",
+    ) -> str:
         classes = ["filter-chip"]
         if extra_class:
             classes.append(extra_class)
-        is_active = name in active_set
+        is_active = data_filter in active_set
         if is_active:
             classes.append("chip-active")
-        escaped = html.escape(name, quote=True)
+        escaped_filter = html.escape(data_filter, quote=True)
+        escaped_label = html.escape(label)
+        style_attr = f" style='{html.escape(style, quote=True)}'" if style else ""
+        pressed = "true" if is_active else "false"
         return (
             f"<button type='button' class='{' '.join(classes)}'"
-            f" data-filter='{escaped}' data-filter-group='{group}'"
-            f" aria-pressed='{'true' if is_active else 'false'}'>"
-            f"{html.escape(name)}</button>"
+            f" data-filter='{escaped_filter}' data-filter-group='{group}'"
+            f" aria-pressed='{pressed}'{style_attr}>"
+            f"{escaped_label}</button>"
         )
 
-    role_chips = "".join(_chip(name, "role") for name in _ROLE_FILTER_CHIPS)
+    def _group(key: str, title: str, hint: str, chips_html: str) -> str:
+        return (
+            f"<div class='filter-group' data-filter-group-container='{key}'>"
+            f"<div class='filter-group-label'>{html.escape(title)}"
+            f"<span>{html.escape(hint)}</span></div>"
+            f"<div class='filter-options'>{chips_html}</div>"
+            "</div>"
+        )
+
+    role_chips = "".join(
+        _chip(data_filter=name, label=name, group="role")
+        for name in _ROLE_FILTER_CHIPS
+    )
     feature_chips = _chip(
-        _ALL_FEATURE_FILTER,
-        "feature",
+        data_filter=_ALL_FEATURE_FILTER,
+        label=_ALL_FEATURE_FILTER,
+        group="feature",
         extra_class="filter-chip-all",
-    ) + "".join(_chip(name, "feature") for name in _FEATURE_FILTER_CHIPS)
+    ) + "".join(
+        _chip(data_filter=name, label=name, group="feature")
+        for name in _FEATURE_FILTER_CHIPS
+    )
+
+    groups = [
+        _group("role", "Role", "select at least one", role_chips),
+        _group("feature", "Step feature", "match any selected", feature_chips),
+    ]
+
+    summary = "Role: Assistant or User &middot; Step feature: All"
+    reset_title = "Restore all roles and remove the step feature restriction"
+    if agent_options:
+        agent_chips = _chip(
+            data_filter=AGENT_ALL_FILTER,
+            label="All",
+            group="agent",
+            extra_class="filter-chip-all",
+        )
+        for token, label, color_idx in agent_options:
+            hex_color = AGENT_COLORS[color_idx % len(AGENT_COLORS)]
+            agent_chips += _chip(
+                data_filter=token,
+                label=label,
+                group="agent",
+                style=f"border-left:3px solid {hex_color};",
+            )
+        groups.append(_group("agent", "Agent", "match any selected", agent_chips))
+        summary += " &middot; Agent: All"
+        reset_title = (
+            "Restore all roles and remove step feature / agent restrictions"
+        )
 
     return (
         "<div class='filter-panel' id='wf-filter-bar'>"
-        "<div class='filter-group' data-filter-group-container='role'>"
-        "<div class='filter-group-label'>Role"
-        "<span>select at least one</span></div>"
-        f"<div class='filter-options'>{role_chips}</div>"
-        "</div>"
-        "<div class='filter-group' data-filter-group-container='feature'>"
-        "<div class='filter-group-label'>Step feature"
-        "<span>match any selected</span></div>"
-        f"<div class='filter-options'>{feature_chips}</div>"
-        "</div>"
-        "</div>"
+        + "".join(groups)
+        + "</div>"
         "<div class='filter-summary' id='wf-filter-summary'>"
-        "<span id='wf-filter-query'>Role: Assistant or User &middot; Step feature: All</span>"
+        f"<span id='wf-filter-query'>{summary}</span>"
         "<button type='button' class='reset-filters' data-wf-action='reset-filters'"
-        " title='Restore all roles and remove the step feature restriction'>"
+        f" title='{html.escape(reset_title, quote=True)}'>"
         "Reset filters</button>"
         "</div>"
     )
@@ -242,12 +362,14 @@ def render_toc_sidebar(steps: list[dict], collapsed: bool = False) -> str:
     items: list[str] = []
     for step in steps:
         idx = step.get("index", 0)
-        role = str(step.get("role", ""))
+        role = workflow_role(step)
         role_style = _ROLE_BADGE_STYLES.get(role, "background:var(--wf-border-default);color:white;")
         onclick = (
             f"(function(){{"
             f"var c=document.getElementById('wf-card-{idx}');"
-            f"if(c){{c.scrollIntoView({{behavior:'smooth',block:'center'}});c.click();}}"
+            f"if(!c)return;"
+            f"if(typeof window.tvFocusWorkflowCard==='function'){{window.tvFocusWorkflowCard(c);}}"
+            f"else{{c.scrollIntoView({{behavior:'smooth',block:'center'}});c.click();}}"
             f"}})()"
         )
         toc_indent = "padding-left:16px;" if step.get("is_sub_agent") else ""
@@ -255,7 +377,7 @@ def render_toc_sidebar(steps: list[dict], collapsed: bool = False) -> str:
             f"<div class='toc-entry' onclick=\"{onclick}\" data-step-idx='{idx}' style='{toc_indent}'>"
             f"<span class='toc-num'>#{idx}</span>"
             f"<span class='wf-badge' style='{role_style};font-size:11px;padding:2px 6px;'>"
-            f"{html.escape(role.title())}</span>"
+            f"{html.escape(workflow_role_label(step))}</span>"
             f"</div>"
         )
     nav_class = "wf-toc-sidebar toc-hidden" if collapsed else "wf-toc-sidebar"
@@ -273,12 +395,12 @@ def render_workflow_html(steps: list[dict]) -> str:
         return "<div style='padding:2em;color:var(--ov-muted);text-align:center;'>No steps to display.</div>"
 
     css = WORKFLOW_CSS
-    color_map = build_agent_color_map(steps)
+    color_map, labels, agent_id_of = bind_timeline_agents(steps)
     has_agents = len(color_map) > 1
 
     cards_html = []
     for i, step in enumerate(steps):
-        bg, border, label = _card_style(step)
+        bg, border, label, err_kind = _card_style(step)
         dur = f"{step['duration']}s" if step["duration"] is not None else "\u2014"
         tok = f"{step['tokens']['total']:,}"
         preview = _md_to_html_preview(step["text_preview"]) if step["text_preview"] else "\u2014"
@@ -295,29 +417,36 @@ def render_workflow_html(steps: list[dict]) -> str:
         icon_str = " \u00b7 ".join(sorted(set(part_icons))) if part_icons else ""
 
         tc_info = f'<span>{step["tool_call_count"]} tool(s)</span>' if step["tool_call_count"] else ''
-        err_info = f'<span style="color:var(--wf-border-error)">{step["error_count"]} err</span>' if step["error_count"] else ''
+        if err_kind == "tool":
+            err_info = (
+                f'<span style="color:var(--wf-border-error)">'
+                f'{step["error_count"]} tool err</span>'
+            )
+        elif err_kind == "system":
+            err_info = (
+                '<span style="color:var(--wf-border-system-error)">system err</span>'
+            )
+        else:
+            err_info = ''
 
-        # Agent badge with per-agent color
+        # Agent badge with per-agent color (same identity as swimlane / tool chart)
         agent_badge = ''
         agent_left_border = ""
-        # Use effective agent (session_id for CodeArts sub-agents)
-        agent_id = step.get("agent", "")
-        if not agent_id and step.get("is_sub_agent") and step.get("session_id"):
-            agent_id = step["session_id"]
         if has_agents:
-            aidx = color_map.get(agent_id, 0)
+            aid = agent_id_of(step)
+            aidx = color_map.get(aid, 0)
             agent_bg, agent_border = AGENT_CSS_COLORS[aidx % len(AGENT_CSS_COLORS)]
             agent_hex = AGENT_COLORS[aidx % len(AGENT_COLORS)]
             agent_left_border = f"border-left:4px solid {agent_hex};"
-            agent_label = "main" if not agent_id else (agent_id[:8] + "\u2026" if len(agent_id) > 8 else agent_id)
+            agent_label = labels.get(aid) or (aid or "main")
             agent_badge = (
                 f'<span class="wf-badge" style="background:{agent_bg};color:{agent_border};'
                 f'border:1px solid {agent_border};font-size:9px;">{html.escape(agent_label)}</span>'
             )
 
-        role = str(step.get("role", ""))
+        role = workflow_role(step)
         role_style = _ROLE_BADGE_STYLES.get(role, "background:var(--wf-border-default);color:white;")
-        role_label = role.title()
+        role_label = workflow_role_label(step)
 
         orig_idx = step.get("index", i)
 
@@ -367,11 +496,11 @@ def _fmt_timestamp(ms):
 
 def _format_step_header(step: dict) -> str:
     """Build the styled HTML header banner and metadata table for a step detail panel."""
-    bg, border, label = _card_style(step)
-    role = str(step.get("role", ""))
+    bg, border, label, _err_kind = _card_style(step)
+    role = workflow_role(step)
     role_style = _ROLE_BADGE_STYLES.get(role, "background:var(--wf-border-default);color:white;")
 
-    rows: list[tuple[str, str]] = [("Role", step['role'])]
+    rows: list[tuple[str, str]] = [("Role", workflow_role_label(step))]
     _optional = [
         ("agent", "Agent"), ("mode", "Mode"), ("model_id", "Model"),
         ("provider_id", "Provider"),
@@ -419,7 +548,7 @@ def _format_step_header(step: dict) -> str:
     banner = (
         f"<div class='dp-header' style='background:{border};'>"
         f"<span class='dp-badge'>#{step['index']}</span>"
-        f"<span class='dp-badge' style='{role_style}'>{html.escape(role.title())}</span>"
+        f"<span class='dp-badge' style='{role_style}'>{html.escape(workflow_role_label(step))}</span>"
         f"Step {step['index']} &mdash; {html.escape(label)}"
         f"</div>"
     )
@@ -456,8 +585,9 @@ def _format_tool_call_detail(p: dict) -> str:
         out = out[:2000] + "\n... (truncated)"
 
     tc_dur = ""
-    if p.get("time_start") and p.get("time_end"):
-        tc_dur = f" &mdash; {round((p['time_end'] - p['time_start']) / 1000, 2)}s"
+    dur_ms = tool_call_duration_ms(p)
+    if dur_ms is not None:
+        tc_dur = f" &mdash; {round(dur_ms / 1000, 2)}s"
 
     meta_parts: list[str] = []
     tool_id = p.get("tool_id", "")
@@ -647,7 +777,6 @@ _METRIC_TOKEN_FIELDS = (
     ("total", "Total Tokens"),
     ("input", "Input Tokens"),
     ("output", "Output Tokens"),
-    ("reasoning", "Reasoning Tokens"),
     ("cache_read", "Cache Read"),
     ("cache_write", "Cache Write"),
 )
@@ -668,15 +797,8 @@ def _unavailable_metric_fields(step: dict) -> list[str]:
         tokens = {}
 
     for key, label in _METRIC_TOKEN_FIELDS:
-        value = tokens.get(key)
-        if (
-            key not in tokens
-            or value is None
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-        ):
-            if label not in missing:
-                missing.append(label)
+        if _optional_token_count(tokens, key) is None and label not in missing:
+            missing.append(label)
     return missing
 
 
@@ -699,9 +821,11 @@ def _format_metrics_tab(step: dict) -> str:
     """Render the Metrics table, or one explicit unavailable state.
 
     A real ``0`` in any token count renders as ``0``; the table is replaced
-    by the unavailable notice only when a token count is genuinely missing.
-    Duration and the derived rows show ``n/a`` individually when they cannot
-    be computed, so complete token data is never hidden by a missing timing.
+    by the unavailable notice only when a required token count is genuinely
+    missing. Reasoning tokens are optional (formats that never report them
+    show ``n/a`` on that row). Duration and the derived rows show ``n/a``
+    individually when they cannot be computed, so complete token data is
+    never hidden by a missing timing.
     """
     missing = _unavailable_metric_fields(step)
     if missing:
@@ -723,11 +847,13 @@ def _format_metrics_tab(step: dict) -> str:
         cache_ratio_text = f"{tokens['cache_read'] / tokens['total'] * 100:.1f}%"
     else:
         cache_ratio_text = "n/a"
+    reasoning = _optional_token_count(tokens, "reasoning")
+    reasoning_text = f"{reasoning:,}" if reasoning is not None else "n/a"
     rows = [
         ("Total Tokens", f"{tokens['total']:,}"),
         ("Input Tokens", f"{tokens['input']:,}"),
         ("Output Tokens", f"{tokens['output']:,}"),
-        ("Reasoning Tokens", f"{tokens['reasoning']:,}"),
+        ("Reasoning Tokens", reasoning_text),
         ("Cache Read", f"{tokens['cache_read']:,}"),
         ("Cache Write", f"{tokens['cache_write']:,}"),
         ("Duration", duration_text),
@@ -835,13 +961,22 @@ def format_step_detail(step: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _diag_jump_onclick(idx: int) -> str:
-    """JS onclick to switch to Workflow tab and scroll to a step card."""
+    """JS onclick to switch to Workflow tab and scroll to a step card.
+
+    Prefers ``window.tvGotoWorkflowStep`` (bound on app load for duration-chart
+    clicks) so overview badges and Plotly jumps share one path.
+    """
     return (
         f"(function(){{"
+        f"if(typeof window.tvGotoWorkflowStep==='function'){{"
+        f"window.tvGotoWorkflowStep({idx});return;}}"
         f"{_JS_GOTO_WORKFLOW}"
         f"setTimeout(function(){{"
         f"var c=document.getElementById('wf-card-{idx}');"
-        f"if(c){{c.scrollIntoView({{behavior:'smooth',block:'center'}});c.click();}}"
+        f"if(c){{"
+        f"if(typeof window.tvFocusWorkflowCard==='function'){{window.tvFocusWorkflowCard(c);}}"
+        f"else{{c.scrollIntoView({{behavior:'smooth',block:'center'}});c.click();}}"
+        f"}}"
         f"}},200);"
         f"}})()"
     )
@@ -877,8 +1012,11 @@ def build_root_cause_html(clusters: list[dict]) -> str:
 
 # Label-based Workflow-tab jump: robust to tab insertions/reordering
 # (positional tabs[i] indexing broke when the Attribution tab shifted the order).
-_JS_GOTO_WORKFLOW = ("var tabs=document.querySelectorAll('button[role=tab]');"
-    "for(var ti=0;ti<tabs.length;ti++){if(tabs[ti].textContent.trim()==='Workflow'){tabs[ti].click();break;}}")
+_JS_GOTO_WORKFLOW = (
+    "if(typeof window.tvClickMainTab==='function'){window.tvClickMainTab('Workflow');}"
+    "else{var tabs=document.querySelectorAll('button[role=tab]');"
+    "for(var ti=0;ti<tabs.length;ti++){if(tabs[ti].textContent.trim()==='Workflow'){tabs[ti].click();break;}}}"
+)
 
 
 
@@ -1074,20 +1212,82 @@ def build_attribution_html(data: dict) -> str:
 # Anti-Pattern Summary
 # ---------------------------------------------------------------------------
 
-def _antipattern_card(border_color: str, title: str, detail: str, why: str) -> str:
-    """Render a single anti-pattern card with a 'why this matters' line."""
-    # title/detail/why can embed untrusted trajectory text (e.g. TodoWrite
-    # plan-item content); escape so it renders as text in the gr.HTML panel.
+_STEP_CHIP_STYLE = (
+    "display:inline-block;padding:1px 6px;margin:0 4px 2px 0;"
+    "border-radius:8px;background:var(--ov-table-header-bg);"
+    "font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer;"
+)
+
+
+def _step_link_chip(idx: int) -> str:
+    """Clickable ``#N`` chip that jumps to Workflow step *idx*."""
+    n = int(idx)
+    return (
+        f"<span class='insight-step-link' style='{_STEP_CHIP_STYLE}' "
+        f"onclick=\"{_diag_jump_onclick(n)}\">#{n}</span>"
+    )
+
+
+def _step_link_chips(indices: list[int], *, limit: int = 8) -> str:
+    """Deduped step chips; shows ``+N more`` when truncated."""
+    seen: list[int] = []
+    for raw in indices:
+        if raw is None:
+            continue
+        n = int(raw)
+        if n not in seen:
+            seen.append(n)
+    if not seen:
+        return ""
+    shown = seen[:limit]
+    chips = "".join(_step_link_chip(n) for n in shown)
+    extra = len(seen) - len(shown)
+    if extra > 0:
+        chips += (
+            f"<span style='font-size:11px;color:var(--ov-muted);'>"
+            f"+{extra} more</span>"
+        )
+    return f"<div style='margin-top:4px;'>{chips}</div>"
+
+
+def _indices_for_step_range(start: int | None, end: int | None, *, max_span: int = 5) -> list[int]:
+    """Expand a streak range to chips; long ranges keep only endpoints."""
+    if start is None:
+        return []
+    if end is None or end == start:
+        return [int(start)]
+    lo, hi = int(start), int(end)
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi - lo + 1 <= max_span:
+        return list(range(lo, hi + 1))
+    return [lo, hi]
+
+
+def _antipattern_card(
+    border_color: str,
+    title: str,
+    detail: str,
+    why: str,
+    *,
+    steps_html: str = "",
+) -> str:
+    """Render a single anti-pattern card with a 'why this matters' line.
+
+    *steps_html* is trusted markup built via :func:`_step_link_chips` (integers
+    only). Title/detail/why are escaped — they may embed trajectory text.
+    """
     title = html.escape(str(title))
     detail = html.escape(str(detail))
     why = html.escape(str(why))
     return (
         f"<div style='padding:8px 12px;background:var(--ov-card);"
         f"border-left:3px solid {border_color};border-radius:4px;margin-bottom:6px;'>"
-        f"<div style='display:flex;align-items:center;gap:8px;'>"
+        f"<div style='display:flex;align-items:center;gap:8px;flex-wrap:wrap;'>"
         f"<span style='font-size:12px;font-weight:600;'>{title}</span>"
         f"<span style='font-size:12px;color:var(--ov-muted);'>{detail}</span>"
         f"</div>"
+        f"{steps_html}"
         f"<div style='font-size:11px;color:var(--ov-muted);font-style:italic;margin-top:3px;'>"
         f"Why it matters: {why}</div>"
         f"</div>"
@@ -1099,19 +1299,21 @@ def build_antipattern_summary_html(
     tool_selection: list[dict],
     plan_metrics: dict,
     error_count: int = 0,
+    error_steps: list[int] | None = None,
 ) -> str:
-    """Render an anti-pattern summary panel with badges."""
+    """Render an anti-pattern summary panel with Workflow jump chips."""
     cards = []
 
     # Platform/tool errors
     if error_count > 0:
         cards.append(_antipattern_card(
             "var(--ov-bad)",
-            f"{error_count} tool error(s)",
+            f"Tool errors ({error_count}×)",
             "detected from tool output (platform, permission, missing file)",
             "Failed tool calls cost tokens and turns to recover from, and often indicate "
             "environment problems (wrong path, missing dependency, sandbox limits) rather than agent mistakes — "
             "fix the environment and the agent may stop wandering.",
+            steps_html=_step_link_chips(error_steps or []),
         ))
 
     # Fruitless streaks
@@ -1125,40 +1327,59 @@ def build_antipattern_summary_html(
         if remaining > 0:
             remaining_len = sum(s["length"] for s in fruitless_streaks[len(shown):])
             streak_desc += f", +{remaining} more ({remaining_len})"
+        streak_indices: list[int] = []
+        for s in fruitless_streaks:
+            streak_indices.extend(
+                _indices_for_step_range(s.get("start_step"), s.get("end_step"))
+            )
         cards.append(_antipattern_card(
             "var(--ov-warn)",
-            f"{len(fruitless_streaks)} fruitless search streak(s)",
+            f"Fruitless search streaks ({len(fruitless_streaks)}×)",
             f"{total_wasted} wasted steps — {streak_desc}",
             "Three or more consecutive searches that returned no matches. Each one still "
             "consumes tokens and latency; sustained streaks suggest the agent is looking "
             "in the wrong place rather than refining its query.",
+            steps_html=_step_link_chips(streak_indices),
         ))
 
     # Tool selection
     if tool_selection:
+        bash_steps = [f.get("step") for f in tool_selection if f.get("step") is not None]
         cards.append(_antipattern_card(
             "var(--ov-accent)",
-            f"{len(tool_selection)} Bash-for-reading",
+            f"Bash-for-reading ({len(tool_selection)}×)",
             "steps used sed/cat/head instead of Read tool",
             "Reading files via shell pipes bypasses the Read tool's structure — "
             "no line numbers, no cross-turn cache, no output cap — which inflates "
             "context size and makes the trajectory harder to analyze.",
+            steps_html=_step_link_chips(bash_steps),
         ))
 
     # Stalled plan items
     stalled = plan_metrics.get("stalled", [])
     if stalled:
         items_desc = ", ".join(f"'{s['content'][:30]}'" for s in stalled[:2])
+        stall_steps: list[int] = []
+        for s in stalled:
+            stall_steps.extend(
+                _indices_for_step_range(s.get("start_step"), s.get("end_step"))
+            )
         cards.append(_antipattern_card(
             "var(--ov-warn)",
-            f"{len(stalled)} stalled plan item(s)",
+            f"Stalled plan items ({len(stalled)}×)",
             items_desc,
             "Items marked in_progress in TodoWrite but never marked completed, "
             "or completed more than 20 steps after they started. Often means the "
             "agent context-switched away and forgot to close the loop.",
+            steps_html=_step_link_chips(stall_steps),
         ))
 
     if not cards:
         return "<div style='padding:12px;color:var(--ov-muted);text-align:center;font-size:13px;'>No anti-patterns detected</div>"
 
-    return "<div>" + "".join(cards) + "</div>"
+    return (
+        "<div class='antipattern-summary'>"
+        "<div style='font-size:13px;font-weight:600;margin:4px 0 8px;'>Anti-pattern summary</div>"
+        + "".join(cards)
+        + "</div>"
+    )

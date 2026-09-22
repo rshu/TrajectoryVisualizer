@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-import shlex
+import re
 from bisect import bisect_right
 from collections import Counter
+
+from trajviz.insight.parser import spawned_child_session_id
+from trajviz.insight.shell_cmd import shell_runs_search
+from trajviz.insight.tool_failure import tool_call_failed
+from trajviz.tool_vocab import (
+    BASH_TOOL_NAMES,
+    WRITE_TOOL_NAMES as _WRITE_TOOL_NAMES,
+    write_target_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -23,10 +32,9 @@ _PLAN_TOOL_NAMES = {
 }
 _READ_TOOL_NAMES = {"Read", "read", "WebFetch"}
 _SEARCH_TOOL_NAMES = {
-    "Bash", "bash", "Grep", "Glob", "grep", "glob", "find", "ToolSearch", "WebSearch",
+    *BASH_TOOL_NAMES,
+    "Grep", "Glob", "grep", "glob", "find", "ToolSearch", "WebSearch",
 }
-# Single source of truth for write-tool names: trajviz.tool_vocab.
-from trajviz.tool_vocab import WRITE_TOOL_NAMES as _WRITE_TOOL_NAMES  # noqa: E402
 _VALIDATION_COMMAND_PATTERNS = (
     "pytest", "python -m pytest", "unittest", "tox", "nox", "go test",
     "cargo test", "npm test", "pnpm test", "yarn test", "jest", "vitest",
@@ -44,15 +52,6 @@ def _has_plan_snapshot(step: dict) -> bool:
         if isinstance(data, dict) and ("todos" in data or "items" in data):
             return True
     return False
-
-
-def _tool_failed(tc: dict) -> bool:
-    """Return True when a tool call clearly failed."""
-    status = tc.get("status", "")
-    if status in ("error", "failed", "failure", "cancelled", "timeout"):
-        return True
-    meta = tc.get("metadata", {})
-    return isinstance(meta, dict) and meta.get("exit") not in (None, 0)
 
 
 def _is_validation_command(command: str) -> bool:
@@ -91,7 +90,7 @@ def classify_structural_phase(step: dict) -> str:
             has_write = True
         if tool_name in _READ_TOOL_NAMES or tool_name in _SEARCH_TOOL_NAMES:
             has_read_or_search = True
-        if _tool_failed(tc):
+        if tool_call_failed(tc):
             has_failure = True
 
         inp = tc.get("input", {})
@@ -311,6 +310,7 @@ def detect_failure_patterns(steps: list[dict]) -> list[dict]:
             "example_error": cluster["pattern"],
             "recovery_path": recovery_path,
             "steps": list(cluster.get("steps", [])),
+            "error_class": cluster.get("error_class", "tool"),
         })
 
     return results
@@ -428,7 +428,7 @@ def extract_plan_history(steps: list[dict]) -> list[dict]:
         for tc in s.get("tool_calls", []):
             name = tc.get("tool_name") or tc.get("name", "")
             # Match TodoWrite (Claude Code), todowrite (OpenCode), TaskCreate, etc.
-            if name.lower() not in ("todowrite", "taskcreate", "taskupdate"):
+            if name.lower() not in ("todowrite", "todo_write", "taskcreate", "taskupdate"):
                 continue
             inp = tc.get("input", tc.get("arguments", {}))
             if not isinstance(inp, dict):
@@ -565,8 +565,9 @@ def extract_subagent_sessions(
 
     for s in steps[:_MAX_STEPS]:
         info = _get_step_info(s, trajectory)
-        is_sub = info.get("isSubAgent", False)
-        session_id = info.get("sessionID", "")
+        # Prefer step fields (may be inferred from Task spawn metadata).
+        is_sub = bool(s.get("is_sub_agent")) or bool(info.get("isSubAgent", False))
+        session_id = s.get("session_id") or info.get("sessionID", "")
         step_idx = s.get("index", 0)
 
         if is_sub and session_id:
@@ -609,17 +610,11 @@ def extract_subagent_sessions(
                 continue
             state = part.get("state", {})
             metadata = state.get("metadata", {}) if isinstance(state, dict) else {}
-            if not isinstance(metadata, dict):
-                continue
-            child_id = (
-                metadata.get("sessionId")
-                or metadata.get("sessionID")
-                or metadata.get("session_id")
+            child_id = spawned_child_session_id(
+                metadata,
+                caller_session_id=str(step.get("session_id") or ""),
             )
-            # A session cannot spawn itself: ignore matches on the child's
-            # own steps (nested tool parts inside the delegated session).
-            if (isinstance(child_id, str) and child_id
-                    and step.get("session_id") != child_id):
+            if child_id:
                 spawn_by_child.setdefault(child_id, step.get("index", 0))
 
     for session in sessions:
@@ -657,149 +652,6 @@ def compute_subagent_metrics(
 # 6. Fruitless Search & Anti-Pattern Detection
 # ---------------------------------------------------------------------------
 
-_SEARCH_BASH_PREFIXES = ("grep", "rg", "ag", "find", "locate", "fgrep", "egrep", "ripgrep")
-_SHELL_PUNCTUATION = ";&|()\n"
-_WRAPPER_OPTIONS_WITH_VALUES = {
-    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
-    "git": {
-        "-C", "-c", "--git-dir", "--work-tree", "--namespace",
-        "--super-prefix", "--config-env",
-    },
-    "sudo": {
-        "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
-        "-C", "--close-from", "-r", "--role", "-t", "--type", "-T",
-        "--command-timeout", "-D", "--chdir", "-R", "--chroot", "-U",
-        "--other-user",
-    },
-    "time": {"-f", "--format", "-o", "--output"},
-    "nice": {"-n", "--adjustment"},
-    "timeout": {"-k", "--kill-after", "-s", "--signal"},
-    "xargs": {
-        "-a", "--arg-file", "-E", "--eof", "-I", "--replace", "-L",
-        "--max-lines", "-n", "--max-args", "-P", "--max-procs", "-s",
-        "--max-chars",
-    },
-}
-
-
-def _shell_segments(command: str) -> list[list[str]]:
-    """Lex shell command segments without evaluating or executing anything."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
-    # Preserve newlines as command boundaries while still honoring quoted ones.
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        # Be conservative for malformed/unclosed quoting.
-        return []
-
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token and all(char in _SHELL_PUNCTUATION for char in token):
-            if current:
-                segments.append(current)
-                current = []
-        else:
-            current.append(token)
-    if current:
-        segments.append(current)
-    return segments
-
-
-def _shell_name(token: str) -> str:
-    """Return a case-insensitive executable basename."""
-    return token.rsplit("/", 1)[-1].lower()
-
-
-def _is_shell_assignment(token: str) -> bool:
-    """Return True for a simple POSIX-style NAME=value assignment."""
-    name, separator, _ = token.partition("=")
-    return bool(
-        separator
-        and name
-        and (name[0].isalpha() or name[0] == "_")
-        and all(char.isalnum() or char == "_" for char in name)
-    )
-
-
-def _skip_wrapper_options(tokens: list[str], index: int, wrapper: str) -> int:
-    """Skip known wrapper flags, including flags whose value is separate."""
-    value_options = _WRAPPER_OPTIONS_WITH_VALUES.get(wrapper, set())
-    while index < len(tokens):
-        option = tokens[index]
-        if option == "--":
-            return index + 1
-        if not option.startswith("-") or option == "-":
-            return index
-        index += 1
-        if option in value_options and index < len(tokens):
-            index += 1
-    return index
-
-
-def _segment_runs_search(tokens: list[str], nesting: int = 0) -> bool:
-    """Recognize a search executable at the head of one shell segment."""
-    index = 0
-    # Bound wrapper traversal even for adversarially repetitive input.
-    for _ in range(12):
-        while index < len(tokens) and _is_shell_assignment(tokens[index]):
-            index += 1
-        if index >= len(tokens):
-            return False
-
-        command = _shell_name(tokens[index])
-        if command in _SEARCH_BASH_PREFIXES:
-            return True
-
-        if command == "git":
-            index = _skip_wrapper_options(tokens, index + 1, "git")
-            return index < len(tokens) and _shell_name(tokens[index]) == "grep"
-
-        if command == "command":
-            index += 1
-            if index < len(tokens) and tokens[index] in ("-v", "-V"):
-                return False
-            index = _skip_wrapper_options(tokens, index, "command")
-            continue
-
-        if command in ("env", "sudo", "time", "nice", "nohup", "xargs"):
-            index = _skip_wrapper_options(tokens, index + 1, command)
-            continue
-
-        if command == "timeout":
-            index = _skip_wrapper_options(tokens, index + 1, command)
-            # timeout's first positional argument is the duration.
-            index += 1
-            continue
-
-        if command == "busybox":
-            index += 1
-            continue
-
-        if command in ("bash", "dash", "ksh", "sh", "zsh") and nesting < 3:
-            # A quoted ``sh -c`` script is data to this process.  Lex it again
-            # with the same non-executing tokenizer instead of invoking a shell.
-            option_index = index + 1
-            while option_index < len(tokens) and tokens[option_index].startswith("-"):
-                flags = tokens[option_index].lstrip("-")
-                if "c" in flags and option_index + 1 < len(tokens):
-                    return any(
-                        _segment_runs_search(segment, nesting + 1)
-                        for segment in _shell_segments(tokens[option_index + 1])
-                    )
-                option_index += 1
-            return False
-
-        if command in ("if", "then", "elif", "while", "until", "do", "!"):
-            index += 1
-            continue
-
-        return False
-    return False
-
 
 def _is_search_call(tc: dict) -> bool:
     """A tool call counts as a search only if it actually searches.
@@ -811,12 +663,10 @@ def _is_search_call(tc: dict) -> bool:
     name = tc.get("tool_name")
     if name not in _SEARCH_TOOL_NAMES:
         return False
-    if name in ("Bash", "bash"):
+    if name in BASH_TOOL_NAMES:
         inp = tc.get("input", {})
         cmd = inp.get("command", "") if isinstance(inp, dict) else ""
-        if not isinstance(cmd, str) or not cmd.strip():
-            return False
-        return any(_segment_runs_search(segment) for segment in _shell_segments(cmd))
+        return shell_runs_search(cmd) if isinstance(cmd, str) else False
     return True
 
 
@@ -918,7 +768,6 @@ def detect_tool_selection_antipatterns(steps: list[dict]) -> list[dict]:
 
     Returns list of flagged steps.
     """
-    import re
     # Only flag commands where sed/cat/head IS the primary command reading a file,
     # not when used in pipes (e.g., "grep ... | head -20" is legitimate).
     _BASH_READ_PATTERNS = [
@@ -933,7 +782,7 @@ def detect_tool_selection_antipatterns(steps: list[dict]) -> list[dict]:
         for tc in s.get("tool_calls", []):
             # OpenCode emits lowercase tool names — match both spellings,
             # like _is_search_call above.
-            if tc.get("tool_name") not in ("Bash", "bash"):
+            if tc.get("tool_name") not in BASH_TOOL_NAMES:
                 continue
             inp = tc.get("input", {})
             cmd = inp.get("command", "") if isinstance(inp, dict) else ""
@@ -949,258 +798,158 @@ def detect_tool_selection_antipatterns(steps: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 7. Semantic Anti-Pattern Detection (requires step labels)
+# 6b. Failed same-path edit retries + repeated identical search
 # ---------------------------------------------------------------------------
 
-_SEMANTIC_PHASE_ORDER = _PHASE_ORDER  # reuse: understand, plan, implement, debug, validate, report
+_EDIT_THRASH_WINDOW = 15
+_EDIT_THRASH_MIN = 3
+_REPEATED_SEARCH_MIN = 3
 
 
-def load_step_labels(labeled_json_path: str) -> dict[int, dict[str, str]]:
-    """Load a ``_labeled.json`` file into a step-index → {phase, action} mapping.
+def detect_edit_thrash(steps: list[dict]) -> list[dict]:
+    """Detect repeated Write/Edit on one path that includes failed attempts.
 
-    Gracefully returns an empty dict on failure.
+    Successful iterate/fix loops on the same file are normal and are NOT
+    flagged. A cluster qualifies only when ≥3 write attempts hit the same path
+    within a short window **and** at least one of those attempts failed.
+
+    Returns
+    -------
+    list[dict]
+        ``{"path", "count", "fail_count", "steps", "start_step", "end_step"}``
     """
-    import json
-    try:
-        with open(labeled_json_path, encoding="utf-8") as f:
-            data = json.load(f)
-        return {
-            s["index"]: {"phase": s.get("phase", "unknown"), "action": s.get("action", "unknown")}
-            for s in data.get("steps", [])
-            if isinstance(s, dict) and "index" in s
-        }
-    except Exception:
-        return {}
-
-
-def detect_semantic_antipatterns(
-    steps: list[dict],
-    step_labels: dict[int, dict[str, str]],
-) -> dict[str, list[dict]]:
-    """Detect anti-patterns from LLM-derived phase/action label sequences.
-
-    Requires ``step_labels`` from :func:`load_step_labels` (or the step labeler).
-    Returns a dict mapping anti-pattern type to a list of instances.
-    Returns empty collections when labels are unavailable.
-
-    Six anti-pattern types:
-    1. phase_oscillation — repeated back-and-forth between two phases
-    2. premature_implementation — implement before any plan phase
-    3. semantic_fruitless_exploration — understand/code_reading streak with no overlap
-       to subsequent implementation targets
-    4. validation_avoidance — high implement:validate ratio
-    5. debug_without_hypothesis — repeated debug_reproduction with no root-cause step
-    6. semantic_plan_stall — extended plan phase with no implement steps
-    """
-    if not step_labels:
-        return {
-            "phase_oscillation": [],
-            "premature_implementation": [],
-            "semantic_fruitless_exploration": [],
-            "validation_avoidance": [],
-            "debug_without_hypothesis": [],
-            "semantic_plan_stall": [],
-        }
-
-    # Build ordered label sequence for assistant steps
-    labeled_seq: list[tuple[int, str, str]] = []  # (step_index, phase, action)
+    # path -> list of (step_idx, failed)
+    by_path: dict[str, list[tuple[int, bool]]] = {}
     for s in steps[:_MAX_STEPS]:
-        if s.get("role") != "assistant":
+        idx = int(s.get("index", 0))
+        for tc in s.get("tool_calls") or []:
+            name = tc.get("tool_name") or ""
+            if name not in _WRITE_TOOL_NAMES:
+                continue
+            inp = tc.get("input", {})
+            path = write_target_path(inp) if isinstance(inp, dict) else ""
+            if not path:
+                continue
+            path = path.replace("\\", "/")
+            by_path.setdefault(path, []).append((idx, tool_call_failed(tc)))
+
+    thrash: list[dict] = []
+    for path, events in by_path.items():
+        if len(events) < _EDIT_THRASH_MIN:
             continue
-        idx = s.get("index", 0)
-        lbl = step_labels.get(idx, {})
-        phase = lbl.get("phase", "unknown")
-        action = lbl.get("action", "unknown")
-        if phase != "unknown":
-            labeled_seq.append((idx, phase, action))
+        best: list[tuple[int, bool]] | None = None
+        best_fails = 0
+        for i in range(len(events)):
+            window = [events[i]]
+            for j in range(i + 1, len(events)):
+                if events[j][0] - events[i][0] > _EDIT_THRASH_WINDOW:
+                    break
+                window.append(events[j])
+            if len(window) < _EDIT_THRASH_MIN:
+                continue
+            fail_count = sum(1 for _, failed in window if failed)
+            if fail_count < 1:
+                continue
+            if best is None or len(window) > len(best):
+                best = window
+                best_fails = fail_count
+        if best is None:
+            continue
+        step_list = [idx for idx, _ in best]
+        thrash.append({
+            "path": path,
+            "count": len(best),
+            "fail_count": best_fails,
+            "steps": step_list,
+            "start_step": step_list[0],
+            "end_step": step_list[-1],
+        })
 
-    if not labeled_seq:
-        return {k: [] for k in (
-            "phase_oscillation", "premature_implementation",
-            "semantic_fruitless_exploration", "validation_avoidance",
-            "debug_without_hypothesis", "semantic_plan_stall",
-        )}
+    thrash.sort(key=lambda t: (-t["fail_count"], -t["count"], t["start_step"], t["path"]))
+    return thrash
 
-    results: dict[str, list[dict]] = {
-        "phase_oscillation": [],
-        "premature_implementation": [],
-        "semantic_fruitless_exploration": [],
-        "validation_avoidance": [],
-        "debug_without_hypothesis": [],
-        "semantic_plan_stall": [],
-    }
 
-    # --- 1. Phase oscillation ---
-    # Detect ≥3 transitions between the same two phases within a sliding window
-    phase_seq = [(idx, phase) for idx, phase, _ in labeled_seq]
-    if len(phase_seq) >= 4:
-        for i in range(len(phase_seq) - 3):
-            window = phase_seq[i:i + 6]
-            phases_in_window = [p for _, p in window]
-            unique_phases = set(phases_in_window)
-            if len(unique_phases) == 2:
-                transitions = sum(
-                    1 for j in range(len(phases_in_window) - 1)
-                    if phases_in_window[j] != phases_in_window[j + 1]
-                )
-                if transitions >= 3:
-                    p1, p2 = sorted(unique_phases)
-                    # Means "at least one oscillating phase is a known workflow
-                    # phase" — not a direction check (the two phases here are
-                    # always distinct, so ranked phases always differ).
-                    is_regression = p1 in _PHASE_RANK or p2 in _PHASE_RANK
-                    results["phase_oscillation"].append({
-                        "phases": [p1, p2],
-                        "step_range": [window[0][0], window[-1][0]],
-                        "transitions": transitions,
-                        "involves_regression": is_regression,
-                    })
-                    break  # report first occurrence only
+def _search_signature(tc: dict) -> str | None:
+    """Normalize a search tool call into a comparable signature, or None."""
+    if not _is_search_call(tc):
+        return None
+    name = tc.get("tool_name") or ""
+    inp = tc.get("input", {}) if isinstance(tc.get("input"), dict) else {}
+    if name in ("Grep", "grep"):
+        pattern = str(inp.get("pattern") or "").strip()
+        path = str(inp.get("path") or "").strip()
+        if not pattern:
+            return None
+        return f"grep:{pattern}|{path}"
+    if name in ("Glob", "glob"):
+        pattern = str(inp.get("pattern") or "").strip()
+        path = str(inp.get("path") or "").strip()
+        if not pattern:
+            return None
+        return f"glob:{pattern}|{path}"
+    if name in BASH_TOOL_NAMES:
+        cmd = str(inp.get("command") or "")
+        normalized = " ".join(cmd.split())
+        if not normalized:
+            return None
+        return f"bash:{normalized}"
+    # Other search tools — use name + primary arg
+    for key in ("pattern", "query", "path"):
+        if inp.get(key):
+            return f"{name}:{inp[key]}"
+    return f"{name}:"
 
-    # --- 2. Premature implementation ---
-    first_plan_idx = None
-    first_impl_idx = None
-    for idx, phase, _ in labeled_seq:
-        if phase == "plan" and first_plan_idx is None:
-            first_plan_idx = idx
-        if phase == "implement" and first_impl_idx is None:
-            first_impl_idx = idx
 
-    if first_impl_idx is not None:
-        if first_plan_idx is None or first_impl_idx < first_plan_idx:
-            # Check if followed by debug within 5 steps
-            impl_pos = next(
-                (i for i, (idx, _, _) in enumerate(labeled_seq) if idx == first_impl_idx),
-                None,
-            )
-            followed_by_debug = False
-            if impl_pos is not None:
-                for _, phase, _ in labeled_seq[impl_pos + 1:impl_pos + 6]:
-                    if phase == "debug":
-                        followed_by_debug = True
-                        break
-            results["premature_implementation"].append({
-                "first_implement_step": first_impl_idx,
-                "first_plan_step": first_plan_idx,
-                "followed_by_debug": followed_by_debug,
-            })
+def detect_repeated_searches(steps: list[dict]) -> list[dict]:
+    """Detect the same search signature used ≥3 times with empty results.
 
-    # --- 3. Semantic fruitless exploration ---
-    # Consecutive understand/code_reading or understand/file_discovery steps
-    # where the read targets don't appear in subsequent implement steps
-    impl_targets: set[str] = set()
+    Complements :func:`detect_fruitless_streaks` (consecutive-only) by catching
+    non-consecutive repeats of an identical query/pattern.
+
+    Returns
+    -------
+    list[dict]
+        ``{"signature": str, "count": int, "steps": [int], "display": str}``
+    """
+    # signature -> step indices where that search was fruitless on the step
+    by_sig: dict[str, list[int]] = {}
     for s in steps[:_MAX_STEPS]:
-        idx = s.get("index", 0)
-        lbl = step_labels.get(idx, {})
-        if lbl.get("phase") == "implement":
-            for tc in s.get("tool_calls", []):
-                inp = tc.get("input", {})
-                if isinstance(inp, dict):
-                    fp = inp.get("file_path", "") or inp.get("filePath", "")
-                    if fp:
-                        impl_targets.add(fp.split("/")[-1])
+        if not _is_fruitless_step(s):
+            continue
+        idx = int(s.get("index", 0))
+        seen_this_step: set[str] = set()
+        for tc in s.get("tool_calls") or []:
+            sig = _search_signature(tc)
+            if not sig or sig in seen_this_step:
+                continue
+            seen_this_step.add(sig)
+            by_sig.setdefault(sig, []).append(idx)
 
-    current_reading_run: list[tuple[int, str]] = []
-    for s in steps[:_MAX_STEPS]:
-        idx = s.get("index", 0)
-        lbl = step_labels.get(idx, {})
-        if lbl.get("action") in ("code_reading", "file_discovery"):
-            targets = []
-            for tc in s.get("tool_calls", []):
-                inp = tc.get("input", {})
-                if isinstance(inp, dict):
-                    fp = inp.get("file_path", "") or inp.get("filePath", "") or inp.get("path", "")
-                    if fp:
-                        targets.append(fp.split("/")[-1])
-            for t in targets:
-                current_reading_run.append((idx, t))
-        else:
-            if len(current_reading_run) >= 5:
-                unused = [(idx, t) for idx, t in current_reading_run if t not in impl_targets]
-                if len(unused) >= 4:
-                    results["semantic_fruitless_exploration"].append({
-                        "step_range": [current_reading_run[0][0], current_reading_run[-1][0]],
-                        "files_read": len(current_reading_run),
-                        "files_unused": len(unused),
-                    })
-            current_reading_run = []
-
-    if len(current_reading_run) >= 5:
-        unused = [(idx, t) for idx, t in current_reading_run if t not in impl_targets]
-        if len(unused) >= 4:
-            results["semantic_fruitless_exploration"].append({
-                "step_range": [current_reading_run[0][0], current_reading_run[-1][0]],
-                "files_read": len(current_reading_run),
-                "files_unused": len(unused),
-            })
-
-    # --- 4. Validation avoidance ---
-    impl_count = sum(1 for _, p, _ in labeled_seq if p == "implement")
-    validate_count = sum(1 for _, p, _ in labeled_seq if p == "validate")
-    if impl_count >= 5 and validate_count == 0:
-        results["validation_avoidance"].append({
-            "implement_steps": impl_count,
-            "validate_steps": 0,
-            "ratio": None,
-        })
-    elif impl_count >= 8 and validate_count > 0 and impl_count / validate_count > 5:
-        results["validation_avoidance"].append({
-            "implement_steps": impl_count,
-            "validate_steps": validate_count,
-            "ratio": round(impl_count / validate_count, 1),
+    out: list[dict] = []
+    for sig, step_list in by_sig.items():
+        unique_steps = sorted(set(step_list))
+        if len(unique_steps) < _REPEATED_SEARCH_MIN:
+            continue
+        # Prefer non-consecutive repeats (fruitless streaks already cover runs).
+        consecutive = all(
+            unique_steps[i] + 1 == unique_steps[i + 1]
+            for i in range(len(unique_steps) - 1)
+        )
+        if consecutive:
+            continue
+        display = sig
+        if sig.startswith("grep:"):
+            display = sig[len("grep:"):]
+        elif sig.startswith("glob:"):
+            display = sig[len("glob:"):]
+        elif sig.startswith("bash:"):
+            display = sig[len("bash:"):]
+        out.append({
+            "signature": sig,
+            "count": len(unique_steps),
+            "steps": unique_steps,
+            "display": display[:80],
         })
 
-    # --- 5. Debug without hypothesis ---
-    # ≥3 consecutive debug_reproduction without debug_root_cause or debug_hypothesis_test
-    repro_run = 0
-    repro_start = None
-    for idx, phase, action in labeled_seq:
-        if action == "debug_reproduction":
-            if repro_run == 0:
-                repro_start = idx
-            repro_run += 1
-        elif action in ("debug_root_cause", "debug_hypothesis_test"):
-            repro_run = 0
-            repro_start = None
-        elif phase != "debug":
-            if repro_run >= 3:
-                results["debug_without_hypothesis"].append({
-                    "step_range": [repro_start, idx],
-                    "reproduction_count": repro_run,
-                })
-            repro_run = 0
-            repro_start = None
-
-    if repro_run >= 3:
-        results["debug_without_hypothesis"].append({
-            "step_range": [repro_start, labeled_seq[-1][0]],
-            "reproduction_count": repro_run,
-        })
-
-    # --- 6. Semantic plan stall ---
-    # ≥5 consecutive plan-phase steps with no implement step between them
-    plan_run = 0
-    plan_start = None
-    for idx, phase, _ in labeled_seq:
-        if phase == "plan":
-            if plan_run == 0:
-                plan_start = idx
-            plan_run += 1
-        elif phase == "implement":
-            if plan_run >= 5:
-                results["semantic_plan_stall"].append({
-                    "step_range": [plan_start, idx],
-                    "plan_steps": plan_run,
-                })
-            plan_run = 0
-            plan_start = None
-        else:
-            pass  # non-plan, non-implement phases don't break the stall
-
-    if plan_run >= 5:
-        results["semantic_plan_stall"].append({
-            "step_range": [plan_start, labeled_seq[-1][0]],
-            "plan_steps": plan_run,
-        })
-
-    return results
+    out.sort(key=lambda r: (-r["count"], r["steps"][0], r["signature"]))
+    return out

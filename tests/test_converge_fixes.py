@@ -200,6 +200,22 @@ class AnchorPatchParsingTests(unittest.TestCase):
         self.assertEqual(read_action.effect_label, "justified")
 
 
+class DshSpawnToolTests(unittest.TestCase):
+    def test_unmapped_subagent_name_is_agent_spawn(self):
+        steps = [_step(0, [{"tool_name": "subagent", "tool_id": "c1",
+                            "input": {"description": "explore"},
+                            "status": "success"}])]
+        actions = canonicalize_steps(steps)
+        self.assertEqual(actions[0].action_type, "AGENT_SPAWN")
+
+    def test_claude_task_is_not_agent_spawn(self):
+        steps = [_step(0, [{"tool_name": "Task", "tool_id": "t1",
+                            "input": {"description": "explore"},
+                            "status": "success"}])]
+        actions = canonicalize_steps(steps)
+        self.assertEqual(actions[0].action_type, "COMMAND")
+
+
 class FuzzySearchTargetTests(unittest.TestCase):
     """B26/B27: reduced SEARCH targets are comparable with native ones and
     scopes match across workspace roots."""

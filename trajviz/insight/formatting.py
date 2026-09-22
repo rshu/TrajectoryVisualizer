@@ -181,12 +181,17 @@ def format_performance_md(metrics: dict, wall_fmt: str) -> str:
     has_breakdown = tok['input'] > 0 or tok['output'] > 0 or tok['cache_read'] > 0
     def _tok_val(v: int) -> str:
         return f"{v:,}" if has_breakdown else "N/A"
+    reasoning_val = (
+        f"{tok['reasoning']:,}"
+        if has_breakdown and metrics.get("reasoning_tokens_reported")
+        else "N/A"
+    )
 
     token_chips = [
         _metric_chip("Total tokens", f"{tok['total']:,}"),
         _metric_chip("Input", _tok_val(tok['input'])),
         _metric_chip("Output", _tok_val(tok['output'])),
-        _metric_chip("Reasoning", _tok_val(tok['reasoning'])),
+        _metric_chip("Reasoning", reasoning_val),
         _metric_chip("Cache read", _tok_val(tok['cache_read'])),
         _metric_chip("Cache write", _tok_val(tok['cache_write'])),
         _metric_chip("Fresh input",
@@ -207,13 +212,14 @@ def format_performance_md(metrics: dict, wall_fmt: str) -> str:
     ]
     # Build agent chips with main agent included and sub-agents labeled
     agent_bd = metrics.get("agent_breakdown", {})
+    agent_labels = metrics.get("agent_labels") or {}
     sub_agent_steps = sum(agent_bd.values())
     main_agent_steps = metrics.get("assistant_steps", 0) - sub_agent_steps
     agent_chips = []
     if agent_bd:
         agent_chips.append(_metric_chip("main agent", f"{main_agent_steps} steps", wide=True))
         for k, v in sorted(agent_bd.items(), key=lambda x: -x[1]):
-            label = f"sub-agent {k[:12]}"
+            label = agent_labels.get(k) or f"sub-agent {k[:12]}"
             agent_chips.append(_metric_chip(label, f"{v} steps", wide=True))
     model_chips = [
         _metric_chip(k, str(v))
@@ -316,8 +322,7 @@ def wall_clock_fmt(metrics: dict) -> tuple[float, str]:
     return wall, fmt
 
 
-def format_banner_html(filename: str, metrics: dict, wall_fmt: str,
-                       *, trajectory_format: str | None = None) -> str:
+def format_banner_html(filename: str, metrics: dict, wall_fmt: str) -> str:
     """Build the one-line HTML summary banner for the loaded trajectory."""
     import html as _html
     parts = [
@@ -331,30 +336,58 @@ def format_banner_html(filename: str, metrics: dict, wall_fmt: str,
         parts.append(f"{total_tokens:,} tokens &middot; ")
         output_rate = metrics.get("output_tokens_per_sec")
         if isinstance(output_rate, (int, float)) and not isinstance(output_rate, bool):
-            parts.append(f"{output_rate} output tok/s &middot; ")
+            parts.append(f"{output_rate} gen tok/s &middot; ")
         else:
             parts.append(f"{metrics['tokens_per_second']} total processed tok/s &middot; ")
     parts.append(f"{wall_fmt} wall-clock")
     if metrics.get("reasoning_parts", 0) > 0:
         parts.append(f" &middot; {metrics['reasoning_parts']} reasoning")
-    banner = "".join(parts)
+    return "".join(parts)
 
-    # Format-specific advisory notes
-    note_style = (
-        "margin-top:6px;padding:4px 10px;background:#fef3c7;"
-        "border-left:3px solid #d97706;border-radius:4px;"
-        "font-size:12px;color:#92400e;"
-    )
-    if trajectory_format in ("opencode", "codearts"):
-        format_name = "CodeArts" if trajectory_format == "codearts" else "OpenCode"
-        banner += (
-            f"<div style='{note_style}'>"
-            f"{format_name} format — Token Usage by Step shows all five fields stacked: "
-            "Fresh Input + Cache Read + Output + Reasoning = Total, with Cache Write as the 5th segment. "
-            "Cache Read can dominate each bar because the source records it as a running "
-            "conversation prefix."
-            "</div>"
+
+def format_context_pressure_html(
+    series: dict,
+    *,
+    steps: list[dict] | None = None,
+    raw: dict | None = None,
+    agent_key: str | None = None,
+    snapshot_step: int | None = None,
+) -> str:
+    """Stats strip and context-usage breakdown for the Diagnostics chart."""
+    from .context_usage import context_usage_breakdown, format_context_usage_html
+    from .context_usage import context_pressure_stats
+
+    stats = context_pressure_stats(series)
+    peak = stats.get("peak_occupancy") or 0
+    chips = [_metric_chip("Peak occupancy", f"{peak:,}")]
+    peak_pct = stats.get("peak_pct")
+    if isinstance(peak_pct, (int, float)):
+        if peak_pct >= 90:
+            verdict = "bad"
+        elif peak_pct >= 70:
+            verdict = "warn"
+        else:
+            verdict = "good"
+        chips.append(_metric_chip("Peak pressure", f"{peak_pct:g}%", verdict=verdict))
+    chips.append(_metric_chip("Compactions", str(stats.get("compaction_count") or 0)))
+    drop = stats.get("largest_drop") or 0
+    chips.append(_metric_chip("Largest drop", f"-{drop:,}" if drop else "0"))
+    usage_html = ""
+    if steps:
+        usage_html = format_context_usage_html(
+            context_usage_breakdown(
+                steps,
+                raw=raw,
+                agent_key=agent_key,
+                window_limit=series.get("window_limit"),
+                snapshot_step=snapshot_step,
+            )
         )
-    return banner
+    return (
+        usage_html
+        + "<div style='margin:4px 0 8px;'>"
+        + _metric_grid(chips)
+        + "</div>"
+    )
 
 

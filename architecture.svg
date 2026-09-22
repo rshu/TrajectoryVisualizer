@@ -9,32 +9,42 @@
 
   <!-- Title -->
   <text x="40" y="48" font-size="30" font-weight="700" fill="#0f172a">TrajViz — System Architecture</text>
-  <text x="42" y="74" font-size="15" fill="#64748b">Coding Agent Trajectory Analysis Dashboard · Claude Code / OpenCode / CodeArts / Codex CLI</text>
+  <text x="42" y="74" font-size="13.5" fill="#64748b">Coding Agent Trajectory Analysis Dashboard · Claude Code / OpenCode / CodeArts / ICode / Codex CLI / Pi / DeepSeek Harness</text>
 
   <!-- ============ 1. DATA SOURCES ============ -->
   <rect x="20" y="94" width="1200" height="150" rx="14" fill="#f5f8ff" stroke="#c7d7f5" stroke-width="1.5" stroke-dasharray="4 4"/>
   <circle cx="44" cy="120" r="11" fill="#334155"/><text x="44" y="125" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">1</text>
   <text x="64" y="125" font-size="15" font-weight="700" fill="#334155">DATA SOURCES — agents produce raw trajectory JSON</text>
 
-  <rect x="40" y="140" width="216" height="90" rx="10" fill="#ffffff" stroke="#bcd0f0" stroke-width="1.5"/>
-  <text x="56" y="169" font-size="15" font-weight="700" fill="#0f172a">Claude Code</text>
-  <text x="56" y="191" font-size="11.5" fill="#64748b">ccsession exporter</text>
-  <text x="56" y="208" font-size="11.5" fill="#64748b">→ trajectory.json</text>
+  <!-- Object formats (ccsession / OpenCode / CodeArts) -->
+  <rect x="40" y="140" width="216" height="42" rx="8" fill="#ffffff" stroke="#bcd0f0" stroke-width="1.5"/>
+  <text x="56" y="157" font-size="14" font-weight="700" fill="#0f172a">Claude Code</text>
+  <text x="56" y="174" font-size="11" fill="#64748b">ccsession exporter</text>
 
-  <rect x="276" y="140" width="216" height="90" rx="10" fill="#ffffff" stroke="#bcd0f0" stroke-width="1.5"/>
-  <text x="292" y="169" font-size="15" font-weight="700" fill="#0f172a">OpenCode</text>
-  <text x="292" y="191" font-size="11.5" fill="#64748b">export / consolidator</text>
-  <text x="292" y="208" font-size="11.5" fill="#64748b">→ op_trajectory.json</text>
+  <rect x="276" y="140" width="216" height="42" rx="8" fill="#ffffff" stroke="#bcd0f0" stroke-width="1.5"/>
+  <text x="292" y="157" font-size="14" font-weight="700" fill="#0f172a">OpenCode</text>
+  <text x="292" y="174" font-size="11" fill="#64748b">export / consolidator</text>
 
-  <rect x="512" y="140" width="216" height="90" rx="10" fill="#ffffff" stroke="#bcd0f0" stroke-width="1.5"/>
-  <text x="528" y="169" font-size="15" font-weight="700" fill="#0f172a">CodeArts</text>
-  <text x="528" y="191" font-size="11.5" fill="#64748b">opencode.db + consolidator</text>
-  <text x="528" y="208" font-size="11.5" fill="#64748b">→ consolidated JSON</text>
+  <rect x="512" y="140" width="216" height="42" rx="8" fill="#ffffff" stroke="#bcd0f0" stroke-width="1.5"/>
+  <text x="528" y="157" font-size="14" font-weight="700" fill="#0f172a">CodeArts</text>
+  <text x="528" y="174" font-size="11" fill="#64748b">opencode.db + consolidator</text>
 
-  <rect x="748" y="140" width="216" height="90" rx="10" fill="#eff4ff" stroke="#5b8def" stroke-width="1.8"/>
-  <text x="764" y="169" font-size="15" font-weight="700" fill="#0f172a">Codex CLI</text>
-  <text x="764" y="191" font-size="11.5" fill="#64748b">.jsonl rollout (session_meta)</text>
-  <text x="764" y="208" font-size="11.5" fill="#64748b">→ normalized on load</text>
+  <rect x="748" y="140" width="216" height="42" rx="8" fill="#ffffff" stroke="#bcd0f0" stroke-width="1.5"/>
+  <text x="764" y="157" font-size="14" font-weight="700" fill="#0f172a">ICode</text>
+  <text x="764" y="174" font-size="11" fill="#64748b">chrys expanded session</text>
+
+  <!-- Event-stream formats (normalized on load) -->
+  <rect x="40" y="188" width="216" height="42" rx="8" fill="#eff4ff" stroke="#5b8def" stroke-width="1.5"/>
+  <text x="56" y="205" font-size="14" font-weight="700" fill="#0f172a">Codex CLI</text>
+  <text x="56" y="222" font-size="11" fill="#64748b">jsonl · session_meta</text>
+
+  <rect x="276" y="188" width="216" height="42" rx="8" fill="#eff4ff" stroke="#5b8def" stroke-width="1.5"/>
+  <text x="292" y="205" font-size="14" font-weight="700" fill="#0f172a">Pi</text>
+  <text x="292" y="222" font-size="11" fill="#64748b">jsonl session log</text>
+
+  <rect x="512" y="188" width="216" height="42" rx="8" fill="#eff4ff" stroke="#5b8def" stroke-width="1.5"/>
+  <text x="528" y="205" font-size="14" font-weight="700" fill="#0f172a">DeepSeek Harness</text>
+  <text x="528" y="222" font-size="11" fill="#64748b">jsonl / zip export</text>
 
   <rect x="984" y="140" width="216" height="90" rx="10" fill="#fff7ec" stroke="#e0913a" stroke-width="1.8"/>
   <text x="1000" y="169" font-size="15" font-weight="700" fill="#0f172a">step_labeler · LLM</text>
@@ -45,10 +55,10 @@
   <polyline points="148,230 148,272" fill="none" stroke="#2563eb" stroke-width="2"/>
   <polyline points="384,230 384,272" fill="none" stroke="#2563eb" stroke-width="2"/>
   <polyline points="620,230 620,272" fill="none" stroke="#2563eb" stroke-width="2"/>
-  <polyline points="856,230 856,272" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <polyline points="856,182 856,272" fill="none" stroke="#2563eb" stroke-width="2"/>
   <polyline points="148,272 856,272" fill="none" stroke="#2563eb" stroke-width="2"/>
   <polyline points="148,272 148,308" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#ah-blue)"/>
-  <rect x="474" y="256" width="64" height="17" fill="#ffffff"/><text x="506" y="269" font-size="12" fill="#2563eb" font-style="italic" text-anchor="middle">raw JSON</text>
+  <rect x="346" y="256" width="76" height="17" fill="#ffffff"/><text x="384" y="269" font-size="12" fill="#2563eb" font-style="italic" text-anchor="middle">raw JSON</text>
   <polyline points="1092,230 1092,308" fill="none" stroke="#17a673" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-green)"/>
   <rect x="1100" y="256" width="52" height="17" fill="#ffffff"/><text x="1102" y="269" font-size="12" fill="#17a673" font-style="italic">sidecar</text>
 
@@ -57,21 +67,26 @@
   <circle cx="44" cy="336" r="11" fill="#17a673"/><text x="44" y="341" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">2</text>
   <text x="64" y="341" font-size="15" font-weight="700" fill="#0f7a54">INGESTION &amp; NORMALIZATION</text>
 
-  <rect x="40" y="352" width="216" height="62" rx="10" fill="#ffffff" stroke="#8fd6b8" stroke-width="1.5"/>
+  <rect x="40" y="352" width="196" height="62" rx="10" fill="#ffffff" stroke="#8fd6b8" stroke-width="1.5"/>
   <text x="56" y="379" font-size="15" font-weight="700" fill="#0f172a">loaders.py</text>
-  <text x="56" y="400" font-size="11.5" fill="#64748b">detect_format() · normalize</text>
+  <text x="56" y="400" font-size="11.5" fill="#64748b">facade · detect / load</text>
 
-  <rect x="276" y="352" width="216" height="62" rx="10" fill="#ffffff" stroke="#8fd6b8" stroke-width="1.5"/>
-  <text x="292" y="379" font-size="15" font-weight="700" fill="#0f172a">parser.py</text>
-  <text x="292" y="400" font-size="11.5" fill="#64748b">parse_steps() → step dicts</text>
-  <polyline points="256,383 272,383" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ah-grey)"/>
+  <rect x="252" y="352" width="196" height="62" rx="10" fill="#ffffff" stroke="#8fd6b8" stroke-width="1.5"/>
+  <text x="268" y="379" font-size="15" font-weight="700" fill="#0f172a">formats/</text>
+  <text x="268" y="400" font-size="11.5" fill="#64748b">per-format converters</text>
+  <polyline points="236,383 250,383" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ah-grey)"/>
+
+  <rect x="464" y="352" width="196" height="62" rx="10" fill="#ffffff" stroke="#8fd6b8" stroke-width="1.5"/>
+  <text x="480" y="379" font-size="15" font-weight="700" fill="#0f172a">parser.py</text>
+  <text x="480" y="400" font-size="11.5" fill="#64748b">parse_steps() → step dicts</text>
+  <polyline points="448,383 462,383" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#ah-grey)"/>
 
   <rect x="984" y="352" width="216" height="62" rx="10" fill="#fff7ec" stroke="#e0913a" stroke-width="1.5"/>
   <text x="1000" y="379" font-size="15" font-weight="700" fill="#0f172a">labels.py</text>
   <text x="1000" y="400" font-size="11.5" fill="#64748b">load / aggregate labels</text>
 
   <!-- ingestion -> step model (orthogonal) -->
-  <polyline points="384,414 384,448 540,448 540,478" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#ah-blue)"/>
+  <polyline points="562,414 562,448 540,448 540,478" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#ah-blue)"/>
   <rect x="408" y="440" width="64" height="17" fill="#ffffff"/><text x="440" y="453" font-size="12" fill="#2563eb" font-style="italic" text-anchor="middle">step dicts</text>
   <polyline points="1092,414 1092,448 720,448 720,478" fill="none" stroke="#17a673" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-green)"/>
   <rect x="866" y="440" width="42" height="17" fill="#ffffff"/><text x="887" y="453" font-size="12" fill="#17a673" font-style="italic" text-anchor="middle">labels</text>
@@ -142,7 +157,7 @@
   <!-- Rendering -->
   <rect x="40" y="970" width="340" height="160" rx="10" fill="#ffffff" stroke="#e07b39" stroke-width="1.5"/>
   <text x="60" y="996" font-size="14" font-weight="700" fill="#c25f1f">Rendering</text>
-  <rect x="60" y="1008" width="300" height="34" rx="7" fill="#fffaf4" stroke="#f0c79b" stroke-width="1.2"/><text x="76" y="1030" font-size="12.5" fill="#0f172a"><tspan font-weight="700">charts.py</tspan> · Plotly</text>
+  <rect x="60" y="1008" width="300" height="34" rx="7" fill="#fffaf4" stroke="#f0c79b" stroke-width="1.2"/><text x="76" y="1030" font-size="12.5" fill="#0f172a"><tspan font-weight="700">charts/</tspan> · Plotly</text>
   <rect x="60" y="1048" width="300" height="34" rx="7" fill="#fffaf4" stroke="#f0c79b" stroke-width="1.2"/><text x="76" y="1070" font-size="12.5" fill="#0f172a"><tspan font-weight="700">rendering.py</tspan> · HTML</text>
   <rect x="60" y="1088" width="300" height="34" rx="7" fill="#fffaf4" stroke="#f0c79b" stroke-width="1.2"/><text x="76" y="1110" font-size="12.5" fill="#0f172a"><tspan font-weight="700">styles.py</tspan> · CSS</text>
 
@@ -150,11 +165,12 @@
   <rect x="400" y="970" width="440" height="160" rx="10" fill="#ffffff" stroke="#e07b39" stroke-width="1.5"/>
   <text x="420" y="996" font-size="14" font-weight="700" fill="#c25f1f">TrajViz Dashboard · Gradio</text>
   <g font-size="12.5">
-    <rect x="420" y="1010" width="112" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="476" y="1030" text-anchor="middle" fill="#0f172a">Overview</text>
-    <rect x="540" y="1010" width="106" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="593" y="1030" text-anchor="middle" fill="#0f172a">Patterns</text>
-    <rect x="654" y="1010" width="126" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="717" y="1030" text-anchor="middle" fill="#0f172a">Comparison</text>
-    <rect x="420" y="1048" width="112" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="476" y="1068" text-anchor="middle" fill="#0f172a">Workflow</text>
-    <rect x="540" y="1048" width="106" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="593" y="1068" text-anchor="middle" fill="#0f172a">Raw Data</text>
+    <rect x="420" y="1010" width="124" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="482" y="1030" text-anchor="middle" fill="#0f172a">Overview</text>
+    <rect x="554" y="1010" width="124" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="616" y="1030" text-anchor="middle" fill="#0f172a">Patterns</text>
+    <rect x="688" y="1010" width="124" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="750" y="1030" text-anchor="middle" fill="#0f172a">Attribution</text>
+    <rect x="420" y="1048" width="124" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="482" y="1068" text-anchor="middle" fill="#0f172a">Comparison</text>
+    <rect x="554" y="1048" width="124" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="616" y="1068" text-anchor="middle" fill="#0f172a">Workflow</text>
+    <rect x="688" y="1048" width="124" height="30" rx="15" fill="#fffaf4" stroke="#e0913a" stroke-width="1.3"/><text x="750" y="1068" text-anchor="middle" fill="#0f172a">Raw Data</text>
   </g>
   <text x="420" y="1110" font-size="11.5" fill="#64748b">single-trajectory · python -m trajviz.insight · localhost:7860</text>
 

@@ -74,7 +74,7 @@ class CodeArtsTests(unittest.TestCase):
         self.assertEqual(sum(trace.y[1] for trace in figure.data), 100)
 
     def test_human_readable_format_label(self):
-        from trajviz.insight.insight import trajectory_format_label
+        from trajviz.insight.presenters import trajectory_format_label
 
         self.assertEqual(trajectory_format_label("codearts"), "CodeArts")
 

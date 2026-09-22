@@ -12,8 +12,6 @@ CONVERGE_CSS = """
     --cvg-success: #059669;
     --cvg-warn: #b45309;
     --cvg-bad: #dc2626;
-    --cvg-delta-pos: #059669;
-    --cvg-delta-neg: #dc2626;
     --cvg-warning-bg: #fffbeb;
     --cvg-warning-border: #f59e0b;
     --cvg-warning-text: #92400e;
@@ -35,8 +33,6 @@ CONVERGE_CSS = """
         --cvg-success: #34d399;
         --cvg-warn: #fbbf24;
         --cvg-bad: #f87171;
-        --cvg-delta-pos: #34d399;
-        --cvg-delta-neg: #f87171;
         --cvg-warning-bg: #422006;
         --cvg-warning-border: #b45309;
         --cvg-warning-text: #fde68a;
@@ -73,38 +69,6 @@ CONVERGE_CSS = """
     font-weight: 600;
     margin: 1rem 0 0.5rem;
     color: var(--cvg-text);
-}
-
-/* ── Metric grid ────────────────────────────────────────────── */
-.cvg-metric-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 0.75rem;
-    margin: 0.75rem 0;
-}
-
-.cvg-metric-grid .cvg-metric {
-    background: var(--cvg-bg);
-    border: 1px solid var(--cvg-border);
-    border-radius: 6px;
-    padding: 0.75rem;
-    text-align: center;
-}
-
-.cvg-metric-grid .cvg-metric-label {
-    display: block;
-    font-size: 0.75rem;
-    color: var(--cvg-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin-bottom: 0.25rem;
-}
-
-.cvg-metric-grid .cvg-metric-value {
-    display: block;
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: var(--cvg-accent);
 }
 
 /* ── Outcome table ──────────────────────────────────────────── */
@@ -157,17 +121,6 @@ CONVERGE_CSS = """
     background: var(--cvg-table-alt-bg);
 }
 
-/* ── Delta coloring ─────────────────────────────────────────── */
-.cvg-delta-pos {
-    color: var(--cvg-delta-pos);
-    font-weight: 600;
-}
-
-.cvg-delta-neg {
-    color: var(--cvg-delta-neg);
-    font-weight: 600;
-}
-
 /* ── Warning callout ────────────────────────────────────────── */
 .cvg-warning {
     background: var(--cvg-warning-bg);
@@ -192,29 +145,6 @@ CONVERGE_CSS = """
     border-radius: 999px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-}
-
-.cvg-badge-success {
-    background: #ecfdf5;
-    color: #059669;
-}
-
-.cvg-badge-fail {
-    background: #fef2f2;
-    color: #dc2626;
-}
-
-.cvg-confidence-badge {
-    display: inline-block;
-    font-size: 0.65rem;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 4px;
-    color: white;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    vertical-align: middle;
-    margin-left: 6px;
 }
 
 /* ── Anchor analysis section ────────────────────────────────── */
