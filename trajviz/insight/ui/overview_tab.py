@@ -52,6 +52,7 @@ class OverviewRefs:
     deep_dive_section: gr.Column
     labels_section: gr.Column
     issues_html: gr.HTML
+    suggest_fixes_btn: gr.Button
     metrics_md: gr.Markdown
     token_chart: gr.Plot
     duration_chart: gr.Plot
@@ -100,6 +101,14 @@ def layout(overview_kpi_html: gr.HTML) -> OverviewRefs:
     with gr.TabItem("Overview"):
         # Debug hero: Issues first; KPI strip lives above the main Tabs.
         issues_html = gr.HTML("")
+        # Opt-in only: judging sends trajectory excerpts (prompts, commands,
+        # file paths, tool output) to the configured LLM endpoint, so it must
+        # never run without an explicit click.
+        suggest_fixes_btn = gr.Button(
+            "Suggest fixes with LLM (sends trajectory excerpts to the configured provider)",
+            size="sm",
+            variant="secondary",
+        )
         session_detail_html = gr.HTML("")
 
         overview_section_names = OVERVIEW_SECTION_NAMES
@@ -237,6 +246,7 @@ def layout(overview_kpi_html: gr.HTML) -> OverviewRefs:
         deep_dive_section=deep_dive_section,
         labels_section=labels_section,
         issues_html=issues_html,
+        suggest_fixes_btn=suggest_fixes_btn,
         metrics_md=metrics_md,
         token_chart=token_chart,
         duration_chart=duration_chart,
@@ -399,7 +409,7 @@ def bind(
     refs: OverviewRefs,
     shared: SharedState,
     upload: UploadRefs,
-    load_events: tuple = (),
+    load_events: tuple = (),  # kept for the uniform tab-bind signature
 ) -> None:
     overview_section_names = OVERVIEW_SECTION_NAMES
     overview_sections = (
@@ -425,7 +435,7 @@ def bind(
     )
 
     def on_suggest_fixes(steps, raw):
-        """Auto-run LLM Issues judge after load; progress shows inside the panel."""
+        """Run the LLM Issues judge on request; progress shows inside the panel."""
         from ..presenters.issues import render_overview_issues_html
 
         if not steps:
@@ -493,8 +503,10 @@ def bind(
         show_progress="minimal",
         concurrency_id="issues_judge",
     )
-    for ev in load_events:
-        ev.then(**judge_event)
+    # Explicit click ONLY. Chaining this onto load_events would ship trajectory
+    # excerpts off-box for every file a user opens, with no consent and no way
+    # to decline; the heuristic (offline) Issues panel is what load renders.
+    refs.suggest_fixes_btn.click(**judge_event)
 
     def _rebuild_utilization(agent_key, window_limit, snapshot_key, steps, raw, dark):
         if not steps:

@@ -268,14 +268,45 @@ def step_duration_excluding_spawn(step: dict) -> float | None:
 
 
 def non_spawn_tool_seconds(step: dict) -> float:
-    """Sum of timed non-spawn tool durations on *step* (seconds)."""
-    total = 0.0
+    """Wall-clock consumed by timed non-spawn tool calls on *step* (seconds).
+
+    Agents issue tool calls in parallel within one step, so summing per-call
+    durations double-counts the overlap and can exceed the step's own wall
+    clock. Where the format stamps ``time_start``/``time_end`` the union of
+    those windows is exact, so that is used; calls carrying only a duration
+    still contribute their full length.
+    """
+    windows: list[tuple[float, float]] = []
+    unstamped = 0.0
     for tc in step.get("tool_calls") or []:
         if not isinstance(tc, dict):
             continue
         ms = tool_call_stats_duration_ms(tc)
-        if ms is not None:
-            total += ms / 1000.0
+        if ms is None:
+            continue
+        ts, te = tc.get("time_start"), tc.get("time_end")
+        if (
+            isinstance(ts, (int, float))
+            and isinstance(te, (int, float))
+            and not isinstance(ts, bool)
+            and not isinstance(te, bool)
+            and te >= ts
+        ):
+            windows.append((float(ts), float(te)))
+        else:
+            unstamped += ms / 1000.0
+
+    total = unstamped
+    if windows:
+        windows.sort()
+        cur_start, cur_end = windows[0]
+        for start, end in windows[1:]:
+            if start > cur_end:  # disjoint: close the run and start a new one
+                total += (cur_end - cur_start) / 1000.0
+                cur_start, cur_end = start, end
+            else:
+                cur_end = max(cur_end, end)
+        total += (cur_end - cur_start) / 1000.0
     return total
 
 
@@ -440,6 +471,12 @@ def _compute_timing_metrics(steps: list[dict]) -> dict:
                 if gen_pair is None:
                     continue
                 gen_s, tool_wait_s = gen_pair
+                if gen_s <= 0:
+                    # Tool stamps consumed the whole step, so this step has no
+                    # measurable generation window. Counting its output tokens
+                    # against zero seconds would inflate the rate without
+                    # bound; leave it out and let the coverage figure say so.
+                    continue
                 timed_assistant_step_count += 1
                 timed_asst_duration += gen_s
                 timed_tool_wait += tool_wait_s
@@ -559,6 +596,7 @@ def _compute_tool_stats(steps, total_tokens_total, message_rows, wait_denom: flo
     tool_success = 0
     tool_fail = 0
     tool_durations: list[float] = []
+    delegated_durations: list[float] = []
 
     for s in steps:
         tool_count += s["tool_call_count"]
@@ -576,11 +614,24 @@ def _compute_tool_stats(steps, total_tokens_total, message_rows, wait_denom: flo
             v = tool_call_stats_duration_ms(tc)
             if v is not None:
                 tool_durations.append(v / 1000.0)
+            elif is_spawn_tool_call(tc):
+                # Delegation wall-clock stays out of tool-execution time on
+                # purpose, but it must not vanish. Claude Code stamps timing
+                # ONLY on the spawn call, so on those exports dropping it
+                # leaves nothing at all: a run with 41% of its wall-clock
+                # inside a sub-agent would report tool time 0.
+                dv = tool_call_duration_ms(tc)
+                if dv is not None:
+                    delegated_durations.append(dv / 1000.0)
 
     assistant_rows = [r for r in message_rows if r.get("role") == "assistant"]
     tool_time_total = sum(r["tool_time_sum"] for r in message_rows)
     avg_td = statistics.mean(tool_durations) if tool_durations else 0
     denom = float(wait_denom) if wait_denom > 0 else 0.0
+    # No timed non-spawn call means "this export records no per-tool timing",
+    # which is not the same claim as "the tools took zero seconds". Report
+    # None so every surface renders n/a instead of a fabricated zero.
+    timed = bool(tool_durations) or tool_time_total > 0
     return {
         "tool_call_count": tool_count,
         "tool_breakdown": tool_breakdown,
@@ -589,16 +640,20 @@ def _compute_tool_stats(steps, total_tokens_total, message_rows, wait_denom: flo
         "tool_fail": tool_fail,
         "tool_success_rate": round(tool_success / tool_count * 100, 1) if tool_count else 0,
         "tokens_per_tool": round(total_tokens_total / tool_count) if tool_count else 0,
-        "tool_time_total": round(tool_time_total, 2),
-        "tool_wait_share": round(tool_time_total / denom * 100, 1) if denom else 0,
-        "avg_tool_duration": round(avg_td, 3),
-        "p95_tool_duration": round(_percentile(tool_durations, 0.95), 3) if tool_durations else 0,
-        "max_tool_duration": round(max(tool_durations), 3) if tool_durations else 0,
+        "tool_time_total": round(tool_time_total, 2) if timed else None,
+        "tool_wait_share": round(tool_time_total / denom * 100, 1) if timed and denom else None,
+        "avg_tool_duration": round(avg_td, 3) if timed else None,
+        "p95_tool_duration": round(_percentile(tool_durations, 0.95), 3) if tool_durations else None,
+        "max_tool_duration": round(max(tool_durations), 3) if tool_durations else None,
+        # Wall-clock the parent spent blocked on sub-agents, kept separate from
+        # tool-execution time so delegation is visible rather than discarded.
+        "delegation_time_total": round(sum(delegated_durations), 2) if delegated_durations else None,
+        "delegated_call_count": len(delegated_durations),
         "multi_tool_steps": sum(1 for r in assistant_rows if r["tool_calls"] >= 2),
         "no_tool_assistant_steps": sum(1 for r in assistant_rows if r["tool_calls"] == 0),
         "patch_steps": sum(1 for r in assistant_rows if r["patch_parts"] > 0),
         "tool_calls_per_min": round(tool_count / (denom / 60), 2) if denom > 0 else None,
-        "tool_time_fraction": round(tool_time_total / denom, 4) if denom > 0 else None,
+        "tool_time_fraction": round(tool_time_total / denom, 4) if timed and denom > 0 else None,
         "tool_system_failure_rate": round(tool_fail / tool_count, 4) if tool_count > 0 else None,
     }
 
