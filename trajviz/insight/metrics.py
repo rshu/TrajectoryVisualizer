@@ -268,14 +268,45 @@ def step_duration_excluding_spawn(step: dict) -> float | None:
 
 
 def non_spawn_tool_seconds(step: dict) -> float:
-    """Sum of timed non-spawn tool durations on *step* (seconds)."""
-    total = 0.0
+    """Wall-clock consumed by timed non-spawn tool calls on *step* (seconds).
+
+    Agents issue tool calls in parallel within one step, so summing per-call
+    durations double-counts the overlap and can exceed the step's own wall
+    clock. Where the format stamps ``time_start``/``time_end`` the union of
+    those windows is exact, so that is used; calls carrying only a duration
+    still contribute their full length.
+    """
+    windows: list[tuple[float, float]] = []
+    unstamped = 0.0
     for tc in step.get("tool_calls") or []:
         if not isinstance(tc, dict):
             continue
         ms = tool_call_stats_duration_ms(tc)
-        if ms is not None:
-            total += ms / 1000.0
+        if ms is None:
+            continue
+        ts, te = tc.get("time_start"), tc.get("time_end")
+        if (
+            isinstance(ts, (int, float))
+            and isinstance(te, (int, float))
+            and not isinstance(ts, bool)
+            and not isinstance(te, bool)
+            and te >= ts
+        ):
+            windows.append((float(ts), float(te)))
+        else:
+            unstamped += ms / 1000.0
+
+    total = unstamped
+    if windows:
+        windows.sort()
+        cur_start, cur_end = windows[0]
+        for start, end in windows[1:]:
+            if start > cur_end:  # disjoint: close the run and start a new one
+                total += (cur_end - cur_start) / 1000.0
+                cur_start, cur_end = start, end
+            else:
+                cur_end = max(cur_end, end)
+        total += (cur_end - cur_start) / 1000.0
     return total
 
 
@@ -440,6 +471,12 @@ def _compute_timing_metrics(steps: list[dict]) -> dict:
                 if gen_pair is None:
                     continue
                 gen_s, tool_wait_s = gen_pair
+                if gen_s <= 0:
+                    # Tool stamps consumed the whole step, so this step has no
+                    # measurable generation window. Counting its output tokens
+                    # against zero seconds would inflate the rate without
+                    # bound; leave it out and let the coverage figure say so.
+                    continue
                 timed_assistant_step_count += 1
                 timed_asst_duration += gen_s
                 timed_tool_wait += tool_wait_s
