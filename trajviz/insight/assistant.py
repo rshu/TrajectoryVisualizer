@@ -152,6 +152,15 @@ def _session_header(raw: dict, steps: list[dict], metrics: dict, wall_fmt: str) 
     return lines
 
 
+def _secs_or_na(value: Any) -> str:
+    """Seconds for the brief, or ``n/a`` when the export records no timing."""
+    return "n/a" if value is None else f"{value}s"
+
+
+def _pct_or_na(value: Any) -> str:
+    return "n/a" if value is None else f"{value}%"
+
+
 def _pct_from_fraction(value: Any) -> str:
     if value is None:
         return "n/a"
@@ -184,10 +193,13 @@ def _metrics_lines(metrics: dict, steps: list[dict]) -> list[str]:
         f"tokens_per_second: {metrics.get('tokens_per_second', 0)}",
         f"tokens_per_tool: {metrics.get('tokens_per_tool', 0)}",
         f"output_tokens_per_sec: {metrics.get('output_tokens_per_sec')}",
-        f"p95_tool_duration: {metrics.get('p95_tool_duration', 0)}s",
-        f"max_tool_duration: {metrics.get('max_tool_duration', 0)}s",
-        f"avg_tool_duration: {metrics.get('avg_tool_duration', 0)}s",
-        f"tool_wait_pct: {metrics.get('tool_wait_share', 0)}%",
+        # n/a, never 0: telling the model the tools took zero seconds when the
+        # export simply records no per-tool timing invents a finding.
+        f"p95_tool_duration: {_secs_or_na(metrics.get('p95_tool_duration'))}",
+        f"max_tool_duration: {_secs_or_na(metrics.get('max_tool_duration'))}",
+        f"avg_tool_duration: {_secs_or_na(metrics.get('avg_tool_duration'))}",
+        f"tool_wait_pct: {_pct_or_na(metrics.get('tool_wait_share'))}",
+        f"delegation_time_total: {_secs_or_na(metrics.get('delegation_time_total'))}",
         f"tool_time_share: {_pct_from_fraction(time_share)}",
         f"tool_system_failure_rate: {_pct_from_fraction(fail_rate)}",
         f"tool_breakdown: {metrics.get('tool_breakdown') or {}}",

@@ -267,9 +267,10 @@ def _tool_wait_verdict(wait_share: float) -> str | None:
 def format_behavioral_md(metrics: dict, diag_metrics: dict | None = None) -> str:
     """Format behavioral diagnostics as card grid with verdict badges."""
     avg_cache = metrics.get("avg_cache_ratio", 0)
-    tool_wait = metrics.get("tool_wait_share", 0)
+    tool_wait = metrics.get("tool_wait_share") or 0
     has_cache_data = metrics.get("cache_read_tokens", 0) > 0 or avg_cache > 0
-    has_tool_timing = metrics.get("tool_time_total", 0) > 0
+    has_tool_timing = bool(metrics.get("tool_time_total"))
+    delegated = metrics.get("delegation_time_total")
 
     chips = [
         _metric_chip("Asst steps", str(metrics["assistant_steps"])),
@@ -296,6 +297,13 @@ def format_behavioral_md(metrics: dict, diag_metrics: dict | None = None) -> str
         chips.append(_metric_chip("Tool dur avg", f"{metrics['avg_tool_duration']}s"))
         chips.append(_metric_chip("Tool dur P95", f"{metrics['p95_tool_duration']}s"))
         chips.append(_metric_chip("Tool dur max", f"{metrics['max_tool_duration']}s"))
+    elif delegated:
+        # Timing exists but only on the delegation call (the Claude Code
+        # shape): say so instead of claiming the format records nothing.
+        chips.append(_metric_chip("Tool timing", "n/a",
+                     hint="no per-tool timing in this export"))
+        chips.append(_metric_chip("Delegated", f"{delegated}s", wide=True,
+                     hint=f"wall-clock in {metrics.get('delegated_call_count', 0)} sub-agent call(s)"))
     else:
         chips.append(_metric_chip("Tool timing", "N/A", hint="not available for this format"))
 
