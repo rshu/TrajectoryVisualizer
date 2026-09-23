@@ -36,6 +36,10 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "ruff>=0.16",
+    # Property-based tests for the ingest contract (tests/test_ingest_robustness.py).
+    # Must stay declared: CI installs with `uv sync --locked --extra dev`, so an
+    # undeclared import here is a collection error, not a skip.
+    "hypothesis>=6.0",
 ]
 # NOTE (Attribution tab): the DECAF failure-attribution integration imports the
 # `awe` package from a DECAF checkout. DECAF is stdlib-only and not published to
