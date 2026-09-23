@@ -256,12 +256,23 @@ def build_comparison_report(
         ref_labels, cmp_labels: Optional step-label mappings from the step
             labeler. When provided, CanonicalActions carry phase/action labels
             and divergence confidence scoring is phase-aware.
+
+    Raises:
+        ValueError: if either trajectory fails to load. A file that is missing,
+            unreadable or unparseable must never become a zero-valued report:
+            ``run_batch`` would record it as a success and fold its fabricated
+            zeros into cross-task aggregate statistics. The Insight UI's
+            ``run_comparison`` already refuses these (``ok: False``); this is
+            the same guard for the file-path entry point.
     """
     from trajviz.insight.loaders import load_trajectory
     from trajviz.insight.parser import parse_steps
 
     ref_raw = load_trajectory(ref_file)
     cmp_raw = load_trajectory(cmp_file)
+    for label, raw, path in (("reference", ref_raw, ref_file), ("compared", cmp_raw, cmp_file)):
+        if isinstance(raw, dict) and raw.get("_error"):
+            raise ValueError(f"Could not load {label} trajectory {path!r}: {raw['_error']}")
     ref_steps = parse_steps(ref_raw)
     cmp_steps = parse_steps(cmp_raw)
 
