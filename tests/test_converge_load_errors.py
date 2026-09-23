@@ -62,6 +62,23 @@ class BuildComparisonReportRejectsBadInput(unittest.TestCase):
             build_comparison_report(str(self.good), str(self.corrupt))
         self.assertIn("compared", str(ctx.exception))
 
+    def test_valid_json_that_is_not_a_trajectory_is_refused(self):
+        # `load_trajectory` returns an unrecognised JSON OBJECT unchanged, with
+        # no `_error` at all, so an `_error`-only guard lets it through and it
+        # scores 0.0 on every metric. This is the door that reproduced the
+        # full 25% batch-aggregate distortion after the first fix.
+        not_a_trajectory = self.tmp / "unknown.json"
+        not_a_trajectory.write_text('{"hello": "world"}')
+        with self.assertRaises(ValueError) as ctx:
+            build_comparison_report(str(not_a_trajectory), str(self.good))
+        self.assertIn("no steps parsed", str(ctx.exception))
+
+    def test_empty_json_array_is_refused(self):
+        empty = self.tmp / "empty.json"
+        empty.write_text("[]")
+        with self.assertRaises(ValueError):
+            build_comparison_report(str(self.good), str(empty))
+
     def test_two_good_files_still_produce_a_report(self):
         other = _min_trajectory(self.tmp / "good2.json", steps=3)
         report = build_comparison_report(str(self.good), str(other))
@@ -100,6 +117,30 @@ class BatchExcludesUnloadableTasks(unittest.TestCase):
             errored = [r for r in with_bad if r.error]
             self.assertEqual(len(errored), 1)
             self.assertEqual(errored[0].task_id, "bad")
+
+    def test_unrecognised_json_object_does_not_poison_the_aggregate(self):
+        """The `_error`-free door: valid JSON that simply is not a trajectory."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            a = _min_trajectory(tmp / "a.json", steps=2)
+            b = _min_trajectory(tmp / "b.json", steps=3)
+            poison = tmp / "poison.json"
+            poison.write_text('{"hello": "world"}')
+
+            good_only = run_batch([ManifestEntry(task_id="t1", reference=str(a), compared=str(b))])
+            with_poison = run_batch([
+                ManifestEntry(task_id="t1", reference=str(a), compared=str(b)),
+                ManifestEntry(task_id="poison", reference=str(poison), compared=str(b)),
+            ])
+
+            agg_good = aggregate_reports(good_only)
+            agg_poison = aggregate_reports(with_poison)
+            self.assertEqual(agg_poison["success_count"], 1)
+            self.assertEqual(agg_poison["failure_count"], 1)
+            self.assertEqual(
+                agg_poison["metrics"]["alignment_f1"]["mean"],
+                agg_good["metrics"]["alignment_f1"]["mean"],
+            )
 
 
 class ConvergeCliExitsNonZeroOnBadInput(unittest.TestCase):

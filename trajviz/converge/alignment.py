@@ -258,10 +258,14 @@ def build_comparison_report(
             and divergence confidence scoring is phase-aware.
 
     Raises:
-        ValueError: if either trajectory fails to load. A file that is missing,
-            unreadable or unparseable must never become a zero-valued report:
-            ``run_batch`` would record it as a success and fold its fabricated
-            zeros into cross-task aggregate statistics. The Insight UI's
+        ValueError: if either trajectory fails to load *or yields no steps*. A
+            file that is missing, unreadable, unparseable or simply not a
+            trajectory must never become a zero-valued report: ``run_batch``
+            would record it as a success and fold its fabricated zeros into
+            cross-task aggregate statistics. Note that an unrecognised JSON
+            *object* is returned by ``load_trajectory`` with no ``_error`` at
+            all, so checking ``_error`` alone is not enough — it is the
+            empty-steps check that closes that door. The Insight UI's
             ``run_comparison`` already refuses these (``ok: False``); this is
             the same guard for the file-path entry point.
     """
@@ -270,11 +274,20 @@ def build_comparison_report(
 
     ref_raw = load_trajectory(ref_file)
     cmp_raw = load_trajectory(cmp_file)
-    for label, raw, path in (("reference", ref_raw, ref_file), ("compared", cmp_raw, cmp_file)):
-        if isinstance(raw, dict) and raw.get("_error"):
-            raise ValueError(f"Could not load {label} trajectory {path!r}: {raw['_error']}")
     ref_steps = parse_steps(ref_raw)
     cmp_steps = parse_steps(cmp_raw)
+    for label, raw, path, steps in (
+        ("reference", ref_raw, ref_file, ref_steps),
+        ("compared", cmp_raw, cmp_file, cmp_steps),
+    ):
+        if isinstance(raw, dict) and raw.get("_error"):
+            raise ValueError(f"Could not load {label} trajectory {path!r}: {raw['_error']}")
+        if not steps:
+            fmt = (raw.get("_format") or raw.get("_detected") or "unrecognised") if isinstance(raw, dict) else "unrecognised"
+            raise ValueError(
+                f"Could not load {label} trajectory {path!r}: no steps parsed "
+                f"(detected format: {fmt}) — refusing to report a zero-valued comparison."
+            )
 
     return build_comparison_report_from_steps(
         ref_raw, cmp_raw, ref_steps, cmp_steps,
