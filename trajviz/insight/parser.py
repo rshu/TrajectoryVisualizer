@@ -1,5 +1,7 @@
 """Data loading, parsing, and aggregate metrics."""
 
+import math
+
 from .loaders import safe_get
 
 # Fields whose absence makes the whole Metrics table unavailable. Reasoning is
@@ -12,11 +14,62 @@ _TOKEN_METRIC_FIELDS = {
 
 
 def _optional_token_count(tokens: dict, key: str) -> int | None:
-    """Return an int token count when *key* was reported, else None."""
+    """Return an int token count when *key* was reported, else None.
+
+    NaN/Infinity are rejected: JSON permits those literals and ``int(inf)``
+    raises ``OverflowError``, which would escape ``parse_steps``.
+    """
     value = tokens.get(key)
     if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
+    if not math.isfinite(value):
+        return None
     return int(value)
+
+
+def usable_token_count(value) -> int | None:
+    """A token count that can be summed, or ``None`` when it cannot.
+
+    A token count is a physical quantity: it is a finite, non-negative
+    integer. Some exports violate that — OpenCode subtracts the cache read
+    from the prompt size, which double-subtracts against providers whose
+    ``input_tokens`` is already cache-exclusive, and writes a NEGATIVE input.
+    Such a record cannot be repaired without guessing, so it is reported as
+    unknown rather than summed into a total or clamped to a false zero.
+    """
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return int(value)
+
+
+def _finite_token(value) -> int | float:
+    """A reported token value with NaN/Infinity replaced by 0."""
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if not math.isfinite(value):
+        return 0
+    return value
+
+
+def cache_read_share(cache_read_tokens, total_tokens) -> float | None:
+    """Cache-read share of one step's tokens, or ``None`` when that is not a share.
+
+    Every supported format keeps the cache read INSIDE the step total —
+    OpenCode and Claude Code as an addend, Codex nested inside ``input`` — so
+    a self-consistent record satisfies ``0 <= cache_read <= total``. When it
+    does not, the quotient is not a fraction and must not be rendered as a
+    percentage: a corrupt OpenCode record produced 25,386.2% reported as
+    "strong cache reuse". The condition is per-step, not per-format.
+    """
+    cache_read = usable_token_count(cache_read_tokens)
+    total = usable_token_count(total_tokens)
+    if cache_read is None or total is None or total <= 0:
+        return None
+    if cache_read > total:
+        return None
+    return cache_read / total
 
 
 def _missing_token_metric_fields(tokens_info: dict) -> list[str]:
@@ -224,12 +277,18 @@ def parse_steps(raw: dict) -> list[dict]:
         metrics_unavailable_fields = _missing_token_metric_fields(tokens_info)
         metrics_source_format = ""
         reasoning = _optional_token_count(tokens_info, "reasoning")
+        # NaN/Infinity are dropped here rather than downstream: JSON permits
+        # the bare literals, and a non-finite token count propagates into
+        # every aggregate before raising deep inside statistics.median().
+        # A NEGATIVE value is preserved — it is a real signal that the export
+        # is self-inconsistent, and the metrics layer counts those steps
+        # instead of silently summing them.
         tokens = {
-            "total": tokens_info.get("total", 0) or 0,
-            "input": tokens_info.get("input", 0) or 0,
-            "output": tokens_info.get("output", 0) or 0,
-            "cache_read": safe_get(tokens_info, "cache", "read", default=0) or 0,
-            "cache_write": safe_get(tokens_info, "cache", "write", default=0) or 0,
+            "total": _finite_token(tokens_info.get("total", 0)),
+            "input": _finite_token(tokens_info.get("input", 0)),
+            "output": _finite_token(tokens_info.get("output", 0)),
+            "cache_read": _finite_token(safe_get(tokens_info, "cache", "read", default=0)),
+            "cache_write": _finite_token(safe_get(tokens_info, "cache", "write", default=0)),
         }
         if reasoning is not None:
             tokens["reasoning"] = reasoning

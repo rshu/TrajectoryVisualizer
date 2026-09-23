@@ -272,7 +272,7 @@ def _agent_lines(summaries: list[dict]) -> list[str]:
             f"- {agent.get('label')}: {agent.get('step_count')} steps, "
             f"{agent.get('total_tokens')} tok, {agent.get('total_duration_s')}s, "
             f"{agent.get('tool_call_count')} tools, {agent.get('error_count')} errors, "
-            f"cache {agent.get('cache_efficiency_pct')}%"
+            f"cache {_pct_or_na(agent.get('cache_efficiency_pct'))}"
         )
     for insight in generate_agent_insights(summaries):
         lines.append(f"- insight: {insight}")

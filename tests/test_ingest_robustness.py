@@ -285,15 +285,14 @@ class LoadTrajectoryNeverRaises(unittest.TestCase):
         )])
         self._assert_contract(_write_json(self.tmp, "string_tokens.json", doc))
 
-    @unittest.expectedFailure
     def test_non_finite_token_values_do_not_crash_the_pipeline(self):
         """``NaN``/``Infinity`` literals must not crash metrics computation.
 
         ``json.dump`` emits bare ``NaN`` / ``Infinity`` by default, so any
         upstream exporter written in Python can produce such a file. The loader
-        accepts it, then ``metrics.py:569`` (``round(total/len(steps))``) raises
-        ``ValueError: cannot convert float NaN to integer`` /
-        ``OverflowError``. Non-finite input should be dropped at parse time.
+        accepts it, and these values used to reach ``statistics.median`` and
+        raise ``ValueError: cannot convert float NaN to integer``. They are now
+        dropped at parse time (``parser._finite_token``).
         """
         text = (
             '{"info": {"id": "s"}, "messages": [{"role": "assistant", "info": '
@@ -602,15 +601,15 @@ class MetricInvariants(unittest.TestCase):
         metrics = _metrics_for(_write_json(self.tmp, "cache_over.json", doc))
         self.assertLessEqual(metrics["avg_cache_ratio"], 100)
 
-    @unittest.expectedFailure
     def test_token_totals_are_never_negative(self):
-        """A token count is a count; a negative one is rendered verbatim as a headline number.
+        """A token count is a count; a negative one must never reach a headline number.
 
-        DEFECT (``trajviz/insight/metrics.py:579``, rendered at
-        ``trajviz/insight/formatting.py:193``): per-message ``input`` values are
-        summed with no floor, so 18 of the 2,500 real corpus trajectories show
-        an ``Input`` chip of ``-3,175,801``. ``max(1, input)`` at
-        ``metrics.py:571`` then turns ``Out/In ratio`` into ``8622.0``.
+        OpenCode subtracts the cache read from the prompt size, which
+        double-subtracts against providers whose ``input_tokens`` is already
+        cache-exclusive, so 82 real corpus files carry a negative raw
+        ``input``. Those records used to be summed, showing an ``Input`` chip
+        of ``-3,175,801``. They are now excluded from the sum and counted in
+        ``input_tokens_unusable_steps`` so the surface can say so.
         """
         doc = _opencode_doc([
             _opencode_message(

@@ -1,7 +1,7 @@
 """Per-step analytics aligned with the trajectory step model."""
 
 from .metrics import tool_call_stats_duration_ms
-from .parser import infer_non_cache_input
+from .parser import cache_read_share, infer_non_cache_input
 
 
 def compute_step_analytics(steps: list[dict]) -> list[dict]:
@@ -28,7 +28,8 @@ def compute_step_analytics(steps: list[dict]) -> list[dict]:
         if duration_s is not None and duration_s > 0:
             tok_per_s = round(tok_total / duration_s, 1)
 
-        cache_ratio = round(cache_read / tok_total, 4) if tok_total > 0 else 0.0
+        _share = cache_read_share(cache_read, tok_total)
+        cache_ratio = None if _share is None else round(_share, 4)
         input_tok = step["tokens"]["input"]
         output_tok = step["tokens"]["output"]
         reasoning_tok = step["tokens"].get("reasoning", 0)

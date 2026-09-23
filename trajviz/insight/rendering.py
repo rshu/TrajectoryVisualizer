@@ -13,7 +13,7 @@ from .charts import bind_timeline_agents
 from .context_usage import PRESSURE_MAIN_AGENT, pressure_agent_key
 from .metrics import tool_call_duration_ms
 from .palette import AGENT_COLORS, AGENT_CSS_COLORS
-from .parser import _optional_token_count
+from .parser import _optional_token_count, cache_read_share
 from .step_errors import step_error_kind
 from .styles import WORKFLOW_CSS
 from .workflow_role import workflow_role
@@ -198,7 +198,8 @@ def _render_one_agent_card(a: dict, agent_hex: str) -> str:
         )
 
     _cache_display = (
-        "N/A" if a["cache_read_tokens"] == 0 and a["total_tokens"] > 0
+        "N/A" if (a["cache_read_tokens"] == 0 and a["total_tokens"] > 0)
+        or a["cache_efficiency_pct"] is None
         else f"{a['cache_efficiency_pct']:.1f}%"
     )
     return (
@@ -843,10 +844,8 @@ def _format_metrics_tab(step: dict) -> str:
         throughput_text = f"{tokens['total'] / duration:,.0f} tok/s"
     else:
         throughput_text = "n/a"
-    if tokens["total"] > 0:
-        cache_ratio_text = f"{tokens['cache_read'] / tokens['total'] * 100:.1f}%"
-    else:
-        cache_ratio_text = "n/a"
+    _cache_share = cache_read_share(tokens["cache_read"], tokens["total"])
+    cache_ratio_text = "n/a" if _cache_share is None else f"{_cache_share * 100:.1f}%"
     reasoning = _optional_token_count(tokens, "reasoning")
     reasoning_text = f"{reasoning:,}" if reasoning is not None else "n/a"
     rows = [

@@ -8,7 +8,7 @@ HELP_TEXT: dict[str, str] = {
     # KPI card metrics
     "steps": "Total conversation turns. Subtitle is assistant vs user; the line below breaks assistant steps down by agent/subagent.",
     "wall_clock": "Elapsed wall-clock time from first to last step, including idle gaps between steps.",
-    "tokens": "Total tokens consumed across all steps: input + output + reasoning + cache read. Subtitle gen tok/s is output tokens ÷ model generation time (step duration minus spawn wait and timed tool waits).",
+    "tokens": "Total tokens consumed across all steps: input + output + reasoning + cache read. A step whose export reports an impossible count (a negative input, or more cache-read tokens than the step total) is excluded from the per-field totals and reported as n/a rather than summed, so on such trajectories the parts may not add up to the total. Subtitle gen tok/s is output tokens ÷ model generation time (step duration minus spawn wait and timed tool waits).",
     "issues": "Count of ranked Overview Issues (errors, waste patterns, performance bottlenecks). Click to jump to the Issues panel.",
     "tool_success": "Percentage of tool calls that completed without errors. 100% means no tool failures.",
     # Section subtitles

@@ -105,8 +105,11 @@ def _build_hotspots_md(rows: list[dict]) -> str:
     # Skip the table entirely if no step reports any cache read — otherwise the
     # table is just five rows of 0.0% (uninformative) for trajectories whose
     # provider doesn't emit cache metrics (e.g., some Codex sessions).
+    # `cache_ratio` is None for a self-inconsistent record; such a row has no
+    # place in a table ranked by cache share.
     asst_with_tok = [r for r in rows
-                     if r.get("role") == "assistant" and r["tokens_total"] > 0]
+                     if r.get("role") == "assistant" and r["tokens_total"] > 0
+                     and r["cache_ratio"] is not None]
     if asst_with_tok and any(r["cache_ratio"] > 0 for r in asst_with_tok):
         low_cache = sorted(asst_with_tok, key=lambda r: r["cache_ratio"])[:5]
         lines = [
@@ -148,18 +151,19 @@ def _build_per_message_md(rows: list[dict], limit: int = 80) -> str:
     for r in rows[:limit]:
         dur = "N/A" if r["duration"] is None else f"{r['duration']:.2f}"
         tokps = "N/A" if r["tokens_per_sec"] is None else f"{r['tokens_per_sec']:.1f}"
+        cache_pct = "N/A" if r["cache_ratio"] is None else f"{r['cache_ratio'] * 100:.1f}%"
         finish = _friendly_finish(r['finish']) or '-'
         if has_agent:
             agent = r.get("agent", "") or "Main agent"
             lines.append(
                 f"| {r['index']} | `{r['role']}` | `{agent}` | `{finish}` | {dur} | "
-                f"{r['tokens_total']:,} | {tokps} | {r['cache_ratio'] * 100:.1f}% | "
+                f"{r['tokens_total']:,} | {tokps} | {cache_pct} | "
                 f"{r['non_cache_tokens']:,} | {r['tool_calls']} |"
             )
         else:
             lines.append(
                 f"| {r['index']} | `{r['role']}` | `{finish}` | {dur} | "
-                f"{r['tokens_total']:,} | {tokps} | {r['cache_ratio'] * 100:.1f}% | "
+                f"{r['tokens_total']:,} | {tokps} | {cache_pct} | "
                 f"{r['non_cache_tokens']:,} | {r['tool_calls']} |"
             )
     if len(rows) > limit:
@@ -187,9 +191,23 @@ def format_performance_md(metrics: dict, wall_fmt: str) -> str:
         else "N/A"
     )
 
+    # Steps whose input was not a usable count are excluded from the sum, so
+    # the chip must say the total is partial. When EVERY step was excluded,
+    # "Input 0" would be an affirmative false count on a real session.
+    input_dropped = metrics.get("input_tokens_unusable_steps") or 0
+    if input_dropped and tok["input"] <= 0:
+        input_val = "N/A"
+        input_hint = f"{input_dropped} step(s) reported a negative input count"
+    elif input_dropped:
+        input_val = _tok_val(tok["input"])
+        input_hint = f"partial — excludes {input_dropped} step(s) with a negative input count"
+    else:
+        input_val = _tok_val(tok["input"])
+        input_hint = ""
+
     token_chips = [
         _metric_chip("Total tokens", f"{tok['total']:,}"),
-        _metric_chip("Input", _tok_val(tok['input'])),
+        _metric_chip("Input", input_val, wide=bool(input_hint), hint=input_hint),
         _metric_chip("Output", _tok_val(tok['output'])),
         _metric_chip("Reasoning", reasoning_val),
         _metric_chip("Cache read", _tok_val(tok['cache_read'])),
@@ -202,7 +220,10 @@ def format_performance_md(metrics: dict, wall_fmt: str) -> str:
         _metric_chip("Avg tok/step", f"{metrics['avg_tokens_per_step']:,}"),
         _metric_chip("Total processed tok/sec", f"{metrics['tokens_per_second']:,}"),
         _metric_chip("Median processed tok/sec", f"{metrics['median_tokens_per_second']:,}"),
-        _metric_chip("Out/In ratio", str(metrics["output_input_ratio"]) if has_breakdown else "N/A"),
+        _metric_chip("Out/In ratio",
+                     str(metrics["output_input_ratio"])
+                     if has_breakdown and metrics.get("output_input_ratio") is not None
+                     else "N/A"),
         _metric_chip("Tok/tool call", f"{metrics['tokens_per_tool']:,}"),
     ]
 
@@ -248,7 +269,11 @@ def format_performance_md(metrics: dict, wall_fmt: str) -> str:
     return "\n".join(sections)
 
 
-def _cache_verdict(avg_cache: float) -> str | None:
+def _cache_verdict(avg_cache: float | None) -> str | None:
+    # Refuse to colour a value that is not a share — the badge must not call
+    # an impossible number "good".
+    if not isinstance(avg_cache, (int, float)) or isinstance(avg_cache, bool):
+        return None
     if avg_cache >= 60:
         return "good"
     if avg_cache >= 30:
@@ -266,9 +291,13 @@ def _tool_wait_verdict(wait_share: float) -> str | None:
 
 def format_behavioral_md(metrics: dict, diag_metrics: dict | None = None) -> str:
     """Format behavioral diagnostics as card grid with verdict badges."""
-    avg_cache = metrics.get("avg_cache_ratio", 0)
+    avg_cache = metrics.get("avg_cache_ratio")
+    cache_unusable = metrics.get("cache_ratio_unusable_steps") or 0
+    usable_cache = isinstance(avg_cache, (int, float)) and not isinstance(avg_cache, bool)
     tool_wait = metrics.get("tool_wait_share") or 0
-    has_cache_data = metrics.get("cache_read_tokens", 0) > 0 or avg_cache > 0
+    # `avg_cache` is None when the records are self-inconsistent, so it cannot
+    # be compared with `> 0` here without a TypeError on exactly those files.
+    has_cache_data = metrics.get("cache_read_tokens", 0) > 0 or (usable_cache and avg_cache > 0)
     has_tool_timing = bool(metrics.get("tool_time_total"))
     delegated = metrics.get("delegation_time_total")
 
@@ -280,11 +309,15 @@ def format_behavioral_md(metrics: dict, diag_metrics: dict | None = None) -> str
         _metric_chip("P95 tok/step", f"{metrics['p95_step_tokens']:,}"),
     ]
     # Cache metrics — N/A when format doesn't provide cache breakdown
-    if has_cache_data:
+    if has_cache_data and usable_cache:
         chips.append(_metric_chip("Avg cache %", f"{avg_cache}%",
                      verdict=_cache_verdict(avg_cache),
                      hint="≥60% good" if avg_cache < 60 else ""))
         chips.append(_metric_chip("Cache-dom", str(metrics["cache_dominant_steps"])))
+    elif has_cache_data:
+        chips.append(_metric_chip(
+            "Avg cache %", "n/a", wide=True,
+            hint=f"{cache_unusable} step(s) report more cache read than the step total"))
     else:
         chips.append(_metric_chip("Avg cache %", "N/A", hint="not available for this format"))
 

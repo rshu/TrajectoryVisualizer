@@ -341,7 +341,7 @@ def _churn(summary: dict | None) -> int | None:
 
 def build_message_metrics(steps: list[dict]) -> list[dict]:
     """Build per-message metrics used for diagnostics tables and charts."""
-    from .parser import infer_non_cache_input
+    from .parser import cache_read_share, infer_non_cache_input
 
     rows: list[dict] = []
     for s in steps:
@@ -379,7 +379,7 @@ def build_message_metrics(steps: list[dict]) -> list[dict]:
             "tokens_output": tok_output,
             "cache_read": cache_read,
             "non_cache_tokens": non_cache,
-            "cache_ratio": (cache_read / tok_total) if tok_total else 0.0,
+            "cache_ratio": cache_read_share(cache_read, tok_total),
             "tokens_per_sec": (tok_total / duration) if duration and duration > 0 else None,
             "non_cache_per_sec": (non_cache / duration) if duration and duration > 0 else None,
             "output_input_ratio": (tok_output / max(1, tok_input)),
@@ -557,9 +557,15 @@ def _compute_token_stats(total_tokens, total_duration, steps, message_rows, raw)
     assistant_rows = [r for r in message_rows if r.get("role") == "assistant"]
     assistant_tokens = [r["tokens_total"] for r in assistant_rows]
     token_rates = [r["tokens_per_sec"] for r in assistant_rows if r.get("tokens_per_sec") is not None]
-    cache_ratios = [r["cache_ratio"] for r in assistant_rows if r["tokens_total"] > 0]
+    cache_rows = [r for r in assistant_rows if r["tokens_total"] > 0]
+    cache_ratios = [r["cache_ratio"] for r in cache_rows if r["cache_ratio"] is not None]
+    # Steps whose record is self-inconsistent (cache_read > total). Averaging
+    # only the rest would bias the result downward precisely because the
+    # excluded steps are the cache-heavy ones, so the count is published and
+    # the mean is withheld when any step is unusable.
+    cache_unusable = len(cache_rows) - len(cache_ratios)
     non_cache_total = sum(r["non_cache_tokens"] for r in message_rows)
-    cache_dominant = sum(1 for r in assistant_rows if r["tokens_total"] > 0 and r["cache_ratio"] >= 0.90)
+    cache_dominant = sum(1 for r in cache_rows if (r["cache_ratio"] or 0) >= 0.90)
     total_io = total_tokens["input"] + total_tokens["output"]
     churn = _churn(summary) or 0
     return {
@@ -568,11 +574,20 @@ def _compute_token_stats(total_tokens, total_duration, steps, message_rows, raw)
         "non_cache_ratio": round(non_cache_total / total_tokens["total"] * 100, 1) if total_tokens["total"] else 0,
         "avg_tokens_per_step": round(total_tokens["total"] / len(steps)) if steps else 0,
         "tokens_per_second": round(total_tokens["total"] / total_duration, 1) if total_duration else 0,
-        "output_input_ratio": round(total_tokens["output"] / max(1, total_tokens["input"]), 3),
+        # Meaningless without a real input total: `max(1, 0)` turned a session
+        # whose every input was rejected into "Out/In 9184.0".
+        "output_input_ratio": (
+            round(total_tokens["output"] / total_tokens["input"], 3)
+            if total_tokens["input"] > 0 else None
+        ),
         "median_step_tokens": round(statistics.median(assistant_tokens)) if assistant_tokens else 0,
         "p95_step_tokens": round(_percentile(assistant_tokens, 0.95)) if assistant_tokens else 0,
         "median_tokens_per_second": round(statistics.median(token_rates), 1) if token_rates else 0,
-        "avg_cache_ratio": round(statistics.mean(cache_ratios) * 100, 1) if cache_ratios else 0,
+        "avg_cache_ratio": (
+            round(statistics.mean(cache_ratios) * 100, 1)
+            if cache_ratios and not cache_unusable else None
+        ),
+        "cache_ratio_unusable_steps": cache_unusable,
         "cache_dominant_steps": cache_dominant,
         "assistant_steps": len(assistant_rows),
         "user_steps": sum(1 for r in message_rows if r.get("role") == "user"),
@@ -760,15 +775,28 @@ def compute_metrics(steps: list[dict], raw: dict, message_rows: list[dict] | Non
     total_duration = sum(durations)
     total_tokens = {"total": 0, "input": 0, "output": 0, "reasoning": 0,
                     "cache_read": 0, "cache_write": 0}
-    from .parser import _optional_token_count
+    from .parser import _optional_token_count, usable_token_count
 
     reasoning_tokens_reported = False
+    # Per-field count of steps whose value was not a usable token count.
+    # A negative input (OpenCode double-subtracts the cache read against
+    # cache-exclusive providers) must not be summed: it dragged the reported
+    # session Input to -3,175,801. Rejected steps are counted so the surfaces
+    # can say "partial" instead of printing a confident wrong total.
+    token_unusable: dict[str, int] = dict.fromkeys(total_tokens, 0)
     for s in steps:
         tokens = s["tokens"]
         if _optional_token_count(tokens, "reasoning") is not None:
             reasoning_tokens_reported = True
         for k in total_tokens:
-            total_tokens[k] += tokens.get(k, 0) or 0
+            reported = tokens.get(k)
+            if reported in (None, 0):
+                continue
+            usable = usable_token_count(reported)
+            if usable is None:
+                token_unusable[k] += 1
+                continue
+            total_tokens[k] += usable
 
     timing = raw.get("timing", {}) if isinstance(raw.get("timing"), dict) else {}
     wall_clock = session_wall_clock_seconds(steps, timing)
@@ -784,6 +812,8 @@ def compute_metrics(steps: list[dict], raw: dict, message_rows: list[dict] | Non
         "max_duration": round(max(durations), 2) if durations else 0,
         "wall_clock": wall_clock,
         "reasoning_tokens_reported": reasoning_tokens_reported,
+        "token_unusable_steps": token_unusable,
+        "input_tokens_unusable_steps": token_unusable.get("input", 0),
         **_compute_token_stats(total_tokens, total_duration, steps, message_rows, raw),
         **_compute_tool_stats(steps, total_tokens["total"], message_rows, float(wall_clock)),
         **_compute_efficiency_stats(steps, message_rows, raw),
@@ -842,11 +872,20 @@ def compute_health_verdict(metrics: dict, step_analytics: list[dict]) -> list[di
     verdicts = []
 
     # Cache efficiency
-    avg_cache = metrics.get("avg_cache_ratio", 0)
+    avg_cache = metrics.get("avg_cache_ratio")
+    cache_unusable = metrics.get("cache_ratio_unusable_steps") or 0
     if not metrics.get("tokens", {}).get("total", 0):
         # No per-step token data (e.g. a format without token usage): a 0% cache
         # ratio here means "unknown", not "poor".
         verdicts.append({"metric": "Cache Efficiency", "status": "good", "label": "N/A", "detail": "No token data"})
+    elif not isinstance(avg_cache, (int, float)) or isinstance(avg_cache, bool):
+        # Self-inconsistent token records: refuse to rate rather than rate an
+        # impossible value "strong", which is what 25,386.2% used to do.
+        detail = (
+            f"{cache_unusable} step(s) report more cache-read tokens than the step total"
+            if cache_unusable else "Cache share unavailable"
+        )
+        verdicts.append({"metric": "Cache Efficiency", "status": "warn", "label": "N/A", "detail": detail})
     elif avg_cache >= 60:
         verdicts.append({"metric": "Cache Efficiency", "status": "good", "label": f"{avg_cache}%",
                          "detail": f"Avg cache read {avg_cache}% — strong cache reuse"})
@@ -948,6 +987,8 @@ def compute_agent_summary(steps: list[dict], raw: dict) -> list[dict]:
     """
     from collections import defaultdict
 
+    from .parser import cache_read_share
+
     if not steps:
         return []
 
@@ -1009,7 +1050,11 @@ def compute_agent_summary(steps: list[dict], raw: dict) -> list[dict]:
         label = labels.get(agent_id, agent_id if agent_id else "main")
         total_tok = d["total_tokens"]
         cache_read = d["cache_read_tokens"]
-        cache_pct = round(cache_read / total_tok * 100, 1) if total_tok > 0 else 0.0
+        # Same domain rule as the session-level ratio: a share that exceeds 1
+        # is not a share. Without this the Agents tab still rendered 9,987.5%
+        # on the very sessions where the Overview had switched to n/a.
+        _cache_share = cache_read_share(cache_read, total_tok)
+        cache_pct = None if _cache_share is None else round(_cache_share * 100, 1)
         dur = d["total_duration_s"]
         tok_per_s = round(total_tok / dur, 1) if dur > 0 else 0.0
 
@@ -1052,7 +1097,7 @@ def generate_agent_insights(agent_summaries: list[dict]) -> list[str]:
             insights.append(
                 f"Agent {a['label']} consumed {share:.0f}% of total tokens"
             )
-        if a["cache_efficiency_pct"] == 0 and a["total_tokens"] > 0:
+        if a["cache_efficiency_pct"] == 0 and a["total_tokens"] > 0 and a["cache_read_tokens"] == 0:
             insights.append(
                 f"Agent {a['label']} has 0% cache efficiency — no prompt caching"
             )
