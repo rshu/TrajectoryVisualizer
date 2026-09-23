@@ -5,6 +5,32 @@ import re
 
 from .common import _iso_to_epoch_ms
 
+
+def _codex_declared_context_window(events: list[dict]) -> int | None:
+    """First positive ``model_context_window`` the export declares, if any.
+
+    Codex states its window on ``task_started`` (``payload.model_context_window``)
+    and repeats it on every ``token_count`` (``payload.info.model_context_window``).
+    No Codex message carries a model id, so this declaration is the only
+    evidence of the real window size — without it every Codex run fell back to
+    the 128k default while actually running in 258,400.
+    """
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        info = payload.get("info")
+        for value in (
+            payload.get("model_context_window"),
+            info.get("model_context_window") if isinstance(info, dict) else None,
+        ):
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return int(value)
+    return None
+
+
 def _convert_codex_to_internal(events: list[dict]) -> dict:
     """Convert Codex CLI JSONL events into the trajviz internal format.
 
@@ -24,6 +50,7 @@ def _convert_codex_to_internal(events: list[dict]) -> dict:
             payload = e.get("payload")
             session_meta = payload if isinstance(payload, dict) else {}
             break
+    declared_window = _codex_declared_context_window(events)
 
     # Group events into assistant turns.
     # Pattern: user message → (reasoning → assistant text → function_calls → function_call_outputs)* → task_complete
@@ -321,6 +348,7 @@ def _convert_codex_to_internal(events: list[dict]) -> dict:
             "directory_name": directory.replace("\\", "/").rsplit("/", 1)[-1],
             "agent": "codex",
             "model": session_meta.get("model", "") or "",
+            "context_window_limit": declared_window,
             "source": "codex",
             "model_provider": session_meta.get("model_provider", "openai"),
             "originator": session_meta.get("originator", "Codex CLI"),

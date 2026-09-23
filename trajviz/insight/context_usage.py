@@ -253,12 +253,14 @@ def infer_context_window_limit(
 ) -> int | None:
     """Return a context-window token limit, or None when it cannot be known.
 
-    Prefers an explicit CodeArts ``context_tokens`` / ``contextToken`` field,
-    then a small model-id prefix table. Never guesses from peak occupancy.
+    Prefers a window the export itself declares (Codex ``context_window_limit``,
+    CodeArts ``context_tokens`` / ``contextToken``) over the model-id prefix
+    table, because the export knows which window the run actually ran in.
+    Never guesses from peak occupancy.
     """
     if isinstance(raw, dict):
         md = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-        for key in ("context_tokens", "contextToken"):
+        for key in ("context_window_limit", "context_tokens", "contextToken"):
             coerced = coerce_window_limit(md.get(key))
             if coerced:
                 return coerced
