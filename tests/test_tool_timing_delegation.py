@@ -113,6 +113,53 @@ class MeasuredToolTimingUnaffectedTests(unittest.TestCase):
         # ...and the delegation is now visible instead of silently discarded.
         self.assertEqual(m["delegation_time_total"], 80.0)
 
+    def test_delegation_chip_shows_even_when_tools_are_also_timed(self):
+        # OpenCode times both its tool calls and its delegation, and the
+        # delegation wall-clock dwarfs the tool time (456s vs 7s on real
+        # traces). Reporting it only when per-tool timing is ABSENT hid the
+        # larger number on exactly the format that records it.
+        parent = _assistant_step(
+            0,
+            duration=100.0,
+            tool_calls=[
+                {"tool_name": "task", "status": "success", "duration_ms": 80_000},
+                {"tool_name": "bash", "status": "success", "duration_ms": 5_000},
+            ],
+        )
+        child = _assistant_step(
+            1, duration=80.0, is_sub_agent=True,
+            tool_calls=[{"tool_name": "read", "status": "success", "duration_ms": 10_000}],
+        )
+        m = _metrics([parent, child])
+        self.assertIsNotNone(m["tool_time_total"])
+        self.assertEqual(m["delegation_time_total"], 80.0)
+        md = format_behavioral_md(m)
+        self.assertIn("Delegated", md)
+        self.assertIn("Tool time", md)
+
+    def test_parallel_delegations_count_wall_clock_not_their_sum(self):
+        # An agent can fan out several sub-agents from one step. They run
+        # concurrently, so the parent is blocked for the longest of them --
+        # which is exactly what step_duration_excluding_spawn subtracts.
+        # Summing them would report more delegation than the step is long.
+        s = _assistant_step(0, duration=70.0, tool_calls=[
+            {"tool_name": "Agent", "status": "success", "duration_ms": 60_000},
+            {"tool_name": "Agent", "status": "success", "duration_ms": 60_000},
+            {"tool_name": "Agent", "status": "success", "duration_ms": 60_000},
+        ])
+        m = _metrics([s])
+        self.assertEqual(m["delegation_time_total"], 60.0)
+        self.assertEqual(m["delegated_call_count"], 3)
+        self.assertLessEqual(m["delegation_time_total"], s["duration"])
+
+    def test_delegation_across_steps_still_adds_up(self):
+        a = _assistant_step(0, duration=50.0, tool_calls=[
+            {"tool_name": "Agent", "status": "success", "duration_ms": 40_000}])
+        b = _assistant_step(1, duration=50.0, tool_calls=[
+            {"tool_name": "Agent", "status": "success", "duration_ms": 30_000}])
+        m = _metrics([a, b])
+        self.assertEqual(m["delegation_time_total"], 70.0)
+
     def test_no_tool_calls_at_all_still_reads_not_available(self):
         m = _metrics([_assistant_step(0, duration=10.0)])
         self.assertIsNone(m["tool_time_total"])

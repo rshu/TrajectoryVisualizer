@@ -596,10 +596,23 @@ def _compute_tool_stats(steps, total_tokens_total, message_rows, wait_denom: flo
     tool_success = 0
     tool_fail = 0
     tool_durations: list[float] = []
-    delegated_durations: list[float] = []
+    delegated_total = 0.0
+    delegated_calls = 0
 
     for s in steps:
         tool_count += s["tool_call_count"]
+        # Delegation wall-clock stays out of tool-execution time on purpose,
+        # but it must not vanish: Claude Code stamps timing ONLY on the spawn
+        # call, so dropping it leaves those exports with no timing at all.
+        # Use the shared per-step helper rather than summing calls — parallel
+        # task/Agent calls overlap, and step_duration_excluding_spawn already
+        # subtracts exactly this quantity.
+        delegated_total += spawn_wait_seconds(s)
+        delegated_calls += sum(
+            1 for tc in (s.get("tool_calls") or [])
+            if isinstance(tc, dict) and is_spawn_tool_call(tc)
+            and tool_call_duration_ms(tc) is not None
+        )
         for tc in s["tool_calls"]:
             name = tc["tool_name"]
             tool_breakdown[name] = tool_breakdown.get(name, 0) + 1
@@ -614,15 +627,6 @@ def _compute_tool_stats(steps, total_tokens_total, message_rows, wait_denom: flo
             v = tool_call_stats_duration_ms(tc)
             if v is not None:
                 tool_durations.append(v / 1000.0)
-            elif is_spawn_tool_call(tc):
-                # Delegation wall-clock stays out of tool-execution time on
-                # purpose, but it must not vanish. Claude Code stamps timing
-                # ONLY on the spawn call, so on those exports dropping it
-                # leaves nothing at all: a run with 41% of its wall-clock
-                # inside a sub-agent would report tool time 0.
-                dv = tool_call_duration_ms(tc)
-                if dv is not None:
-                    delegated_durations.append(dv / 1000.0)
 
     assistant_rows = [r for r in message_rows if r.get("role") == "assistant"]
     tool_time_total = sum(r["tool_time_sum"] for r in message_rows)
@@ -647,8 +651,8 @@ def _compute_tool_stats(steps, total_tokens_total, message_rows, wait_denom: flo
         "max_tool_duration": round(max(tool_durations), 3) if tool_durations else None,
         # Wall-clock the parent spent blocked on sub-agents, kept separate from
         # tool-execution time so delegation is visible rather than discarded.
-        "delegation_time_total": round(sum(delegated_durations), 2) if delegated_durations else None,
-        "delegated_call_count": len(delegated_durations),
+        "delegation_time_total": round(delegated_total, 2) if delegated_calls else None,
+        "delegated_call_count": delegated_calls,
         "multi_tool_steps": sum(1 for r in assistant_rows if r["tool_calls"] >= 2),
         "no_tool_assistant_steps": sum(1 for r in assistant_rows if r["tool_calls"] == 0),
         "patch_steps": sum(1 for r in assistant_rows if r["patch_parts"] > 0),

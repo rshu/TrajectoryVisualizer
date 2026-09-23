@@ -302,10 +302,16 @@ def format_behavioral_md(metrics: dict, diag_metrics: dict | None = None) -> str
         # shape): say so instead of claiming the format records nothing.
         chips.append(_metric_chip("Tool timing", "n/a",
                      hint="no per-tool timing in this export"))
-        chips.append(_metric_chip("Delegated", f"{delegated}s", wide=True,
-                     hint=f"wall-clock in {metrics.get('delegated_call_count', 0)} sub-agent call(s)"))
     else:
         chips.append(_metric_chip("Tool timing", "N/A", hint="not available for this format"))
+
+    # Delegation is reported whenever it was timed, INCLUDING for formats that
+    # also time their ordinary tool calls (OpenCode times both, and its
+    # delegation wall-clock dwarfs its tool time). Tying this to the branch
+    # above hid it on exactly those traces.
+    if delegated:
+        chips.append(_metric_chip("Delegated", f"{delegated}s", wide=True,
+                     hint=f"wall-clock in {metrics.get('delegated_call_count', 0)} sub-agent call(s)"))
 
     # Diagnostic metrics
     dm = diag_metrics or {}
