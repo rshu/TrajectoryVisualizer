@@ -361,11 +361,17 @@ def build_plan_timeline_chart(
     # Plotly places the first-added bar at the *bottom* of a horizontal bar chart,
     # so we iterate in reverse (latest start first) to get earliest-at-top.
     # Items without a start_step (never started) fall to the bottom.
-    def _sort_key(it: dict) -> tuple[int, int]:
+    # The key must be TOTAL: ties on start_step (and every never-started item,
+    # which shares the same key) would otherwise keep whatever order the caller
+    # produced, making the chart depend on upstream ordering. The trailing
+    # index breaks ties by first appearance, so with reverse=True the earliest
+    # item is added last and therefore renders at the top.
+    def _sort_key(pair: tuple[int, dict]) -> tuple[int, int, int]:
+        idx, it = pair
         s = it.get("start_step")
-        return (0, s) if s is not None else (1, 0)
+        return (0, s, idx) if s is not None else (1, 0, idx)
 
-    items = sorted(items, key=_sort_key, reverse=True)
+    items = [it for _, it in sorted(enumerate(items), key=_sort_key, reverse=True)]
 
     fig = go.Figure()
     y_labels = []

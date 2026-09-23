@@ -510,10 +510,15 @@ def compute_plan_metrics(plan_history: list[dict]) -> dict:
 
     items = []
     stalled = []
-    all_contents: set[str] = set()
+    # Insertion-ordered, NOT a set: iterating a set follows per-process string
+    # hash randomisation, which made the Plan Progress Timeline's row order and
+    # the "stalled items" the Overview names differ between runs on the same
+    # file. First-appearance order is also the order the agent wrote the plan,
+    # which is how a reader expects to read it.
+    all_contents: dict[str, None] = {}
     for snapshot in plan_history:
         for item in snapshot["items"]:
-            all_contents.add(item["content"])
+            all_contents.setdefault(item["content"], None)
 
     for content in all_contents:
         start = item_first_progress.get(content)
