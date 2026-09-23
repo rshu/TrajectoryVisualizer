@@ -28,7 +28,7 @@ Full-corpus differential over **all 2,500 real trajectories** in
 | Full pipeline (load → session → every presenter and chart, light **and** dark) | 2,500/2,500 clean: 0 crashes, 0 load errors, 0 error banners |
 | Loader exceptions | 0 on both versions |
 | Performance | identical (1.2 ms mean per load on both) |
-| Determinism | identical output on repeated loads, both versions — but this check ran **in-process**, so it could not see string-hash variation; the cross-process check later found backlog item 5 |
+| Determinism | identical output on repeated loads, both versions — but this check ran **in-process**, so it could not see string-hash variation; the cross-process check later found the plan-ordering defect (fixed in `a41f2de`) |
 | Entry points | CLI `--help`, `--report` for claude_code/codex/opencode, and the converge app all work |
 | ZIP ingestion | bounded: 32 MB/member, 128 MB total, 64-child cap, in-memory reads (no extraction, so no zip-slip) |
 | `_MAX_STEPS` | 2,000 on both versions; no corpus file exceeds 173 steps |
@@ -120,11 +120,12 @@ numeric correction (`metrics.py:608`, the `metadata.exit` failure branch)
 survived all 615 committed tests but is killed by 4 of the new
 `test_format_synthesis.py` tests. Both survivors were fixed — see below.
 
-**Known-wrong numbers still displayed** (backlog items 1, 3, 4 below): avg cache
-% can render 25,386.2% with a green health verdict, Input can render
--3,175,801, and Codex peak context pressure is ~2x too high on 500/500 files.
-The dashboard is sound as an exploratory tool; **numbers destined for a paper
-should come from a build with those items fixed.**
+**Known-wrong numbers the campaign found** — avg cache % rendering 25,386.2%
+with a green health verdict, Input rendering −3,175,801, Codex peak pressure
+~2× too high on 500/500 files, and a plan chart whose row order changed between
+runs — **were fixed on 2026-09-23**; see the section below. The remaining open
+items do not fabricate a headline number, but read that list before publishing
+anything derived from the charts.
 
 ### Fixed during the campaign
 
@@ -147,131 +148,182 @@ should come from a build with those items fixed.**
   pollution from `test_attribution.py` leaked in. 21 new tests had been added
   into that blast radius. Now configured in `setUp` as well.
 
+## The four paper-blocking items — FIXED 2026-09-23
+
+The items previously ranked 1, 3, 4 and 5 were the ones that could put a wrong
+number in a publication. All four are fixed, each specified by an independent
+investigation and reviewed by an adversarial verifier before it was applied.
+
+**Items 1 and 3 were ONE defect** (`21c08fd`), and the corrupt data is in the
+raw exports, not in TrajViz. OpenCode derives `input` by subtracting the cache
+read from the prompt size; against a provider whose `input_tokens` is already
+cache-exclusive (the Anthropic-style endpoints) that subtracts twice, so the
+export itself carries a negative input. **82 of the 1,500 OpenCode corpus
+files, 736 records, 81 of them `opencode_opus`** — worth knowing independently
+of TrajViz, since it is a property of the collected data.
+
+TrajViz published those records as fact. Before → after, verified on the real
+files:
+
+| Surface | Before | After |
+|---|---|---|
+| Input chip | −3,175,801 | 12,880, disclosed as partial (47 steps excluded) |
+| Avg cache % | 25,386.2%, **green** "strong cache reuse" | n/a, **warn**, naming the 47 bad steps |
+| Out/In ratio | 9184.0 (`output / max(1, 0)`) | n/a |
+| Agents-tab cache % | up to 9,987.5% | ≤ 100% |
+
+Every supported format keeps the cache read INSIDE the step total (OpenCode and
+Claude Code as an addend, Codex nested inside `input`), so a self-consistent
+record of any format satisfies `0 <= cache_read <= total`. The violation is
+per-step corruption, not a per-format schema difference, so the guard is
+per-step: `parser.cache_read_share` returns `None` when the quotient would not
+be a share, and `parser.usable_token_count` rejects anything that is not a
+finite non-negative count. Rejected rather than repaired or clamped —
+reconstructing the true input would mean asserting knowledge of another tool's
+bug, and clamping would silently bless a broken export. Excluded steps are
+counted (`cache_ratio_unusable_steps`, `input_tokens_unusable_steps`) and
+surfaced, and when every step is rejected the chip reads N/A, not 0, because
+"Input 0" on a 15,860-token session is an affirmative false count. All four
+birth sites of the quotient are guarded; guarding one would have left the
+Agents tab contradicting the Overview on exactly the affected sessions.
+NaN/Infinity token literals are now dropped at parse time (they used to reach
+`statistics.median` and raise). claude_code is untouched (88.6%, good).
+
+**Item 4 — Codex context window** (`454c4e5`). The export declares its own
+window twice (258,400 in 500/500 files) and carries no model id; the converter
+discarded it, so every Codex run fell back to the 128k default.
+
+| | Before | After |
+|---|---|---|
+| window limit | 128,000 | 258,400 |
+| peak pressure | 2.01–2.03× too high on every file | correct |
+| impossible >100% peaks | 70 files | 8 files |
+| verdict colour changes | — | **163 of 500** |
+
+The 128k assumption was physically falsified by the exports' own counters: 22
+files record a *single* request whose prompt exceeds 128,000 tokens (max
+197,131). The declared window now rides in `metadata.context_window_limit` and
+is consulted before the model-id table; a UI-set value still wins, and a file
+without a declaration falls back exactly as before.
+
+**Item 5 — plan nondeterminism** (`a41f2de`). Fixed at both levels and verified
+*across processes*: 150 corpus files, every packed UI slot hashed under two
+`PYTHONHASHSEED` values — 0 slots differ, where the campaign previously
+measured 6/300 files differing on `plan_timeline_chart`.
+
+Regression tests for all four are mutation-verified (removing each guard kills
+5, 4 and 1 tests respectively). Two `@unittest.expectedFailure` tests that
+documented the broken token contracts now pass, so their decorators are gone:
+xfails 8 → 6. Suite 823 → 844 passing, ruff clean, full deep sweep 2,500/2,500.
+
 ## Open backlog (confirmed, not yet fixed)
 
 Ranked. Each was reproduced against current code by an adversarial verifier.
 The campaign added ~32 distinct defects (37 confirmed findings, 5 pairs
 double-counted across surfaces); the highest-value ones are folded in below.
 
-1. `metrics.py:382` — `cache_ratio = cache_read / tok_total` is unbounded, and
-   `:575` averages it into `avg_cache_ratio`. Providers that report `total`
-   excluding cache reads make this exceed 100%: a real corpus file renders
-   **avg cache % = 25,386.2%** with a **green** "strong" health verdict at
-   `:846`. Clamp it, and make the verdict refuse out-of-range input.
-2. `report.py:287` — `_mixed_md_to_html` passes any markdown line starting with
+1. `report.py:287` — `_mixed_md_to_html` passes any markdown line starting with
    `<` through **verbatim**, so trajectory-derived strings containing markup
    become live HTML in the exported report. (A sweep of all 2,500 generated
    reports found zero non-plotly `<script>` in `<body>`, so real corpus content
    does not currently reach the sink — but nothing prevents it.)
-3. `metrics.py:571`/`:579` — provider token fields are never clamped, so
-   `input_tokens` can be **negative** (-3,175,801 on real data; 370 assistant
-   steps across the corpus) and `output_input_ratio` is computed from it.
-4. `context_usage.py:288-297` — `_MODEL_CONTEXT_LIMITS` knows only `claude` and
-   `gpt-4o` prefixes. No Codex step carries a `model_id` at all, so all 500
-   Codex trajectories fall back to the 128k default while their exports declare
-   `model_context_window = 258400` — every Codex peak-pressure percentage is
-   **2.02x too high**, flipping the verdict colour on 163/500. (This is the
-   escalation of former item #19: the fix is to read the declared window, not
-   just extend the table.)
-5. `patterns.py:513-518` — `compute_plan_metrics` iterates a `set[str]`, so
-   plan item order follows per-process string-hash randomisation.
-   `charts/activity.py:364` sorts with a non-total key and a stable sort, so
-   the **Plan Progress Timeline's row order changes between runs on identical
-   input** (116/502 trajectories with ≥2 plan items), and `rendering.py:1361`
-   slices `stalled[:2]`, so *which* stalled items the Overview names also
-   varies. A figure in a paper is not reproducible from the same file. Fix:
-   `dict.fromkeys(...)` for insertion order plus a total sort key.
-6. `charts/usage.py:148` and `:698` — `cache_write` is dropped from the Token
+2. **Occupancy accounting, uncovered by the item 4 fix**: 8 Codex files still
+   report peak context occupancy above 100% (max 151.5%) against the *correct*
+   258,400 window, so there is a second defect underneath the window one. A
+   share of a window cannot exceed the window; find where the occupancy is
+   accumulated (likely cross-turn double counting, or counting a cache read
+   that was already in the prefix).
+3. `charts/usage.py:148` and `:698` — `cache_write` is dropped from the Token
    Usage and Agent Token charts (computed at `:131`, passed only on the
    `opencode`/`codearts` branch; `compute_agent_summary` never accumulates it
    at all), so the stacked bars do not sum to the reported total. `:144` also
    draws reasoning tokens **twice** on OpenCode.
-7. `formats/claude_code.py:23` — `total = inp + out + cache_read + cache_write`
+4. `formats/claude_code.py:23` — `total = inp + out + cache_read + cache_write`
    double-counts on every one of the 500 claude_code trajectories (median ~4%
    inflation of reported total tokens).
-8. `run_group.py:377`/`:415`/`:671` — a zero-step load counts as a successful
+5. `run_group.py:377`/`:415`/`:671` — a zero-step load counts as a successful
    run, wins every "best" flag and shifts the consensus threshold; missing
    metrics are coerced to `0` and highlighted green as "best". `:723` calls
    `load_trajectory` with no `try/except`, so one bad file aborts a batch
    (triggers: `cursor.py:35` unguarded `datetime.fromtimestamp`, `dsh.py:962`
    `RuntimeError` on an encrypted zip member). Fix the loader-local bugs **and**
    wrap `:723`. This is the same class as the converge blocker fixed above.
-9. `ui/comparison_tab.py` — a stale Run Group scorecard is never cleared on a
+6. `ui/comparison_tab.py` — a stale Run Group scorecard is never cleared on a
    new load, so the panel can show another trajectory's numbers. The file is
    50% covered and carries a confirmed defect with no regression test.
-10. `formats/icode.py:405`/`:190` — per-call `_chrys_timing` is never read, so
+7. `formats/icode.py:405`/`:190` — per-call `_chrys_timing` is never read, so
     every real ICode session loses all tool timing; `:120` leaves real ICode
     tool names uncanonicalised (`_ICODE_TOOL_NAMES` lacks `read_file`,
     `write_file`, `edit_file`, `zsh`).
-11. `formats/dsh.py:235` — `component_total = inp + out + reasoning +
+8. `formats/dsh.py:235` — `component_total = inp + out + reasoning +
     cache_read + cache_write` double-counts; `:279` derives tool failure only
     from `data.error`, missing the item-level flag (3/342 real DSH tool results
     carry it); `:632` silently discards an entire child session on one
     malformed line.
-12. `context_usage.py:218` — occupancy omits `cache_write`, understating window
+9. `context_usage.py:218` — occupancy omits `cache_write`, understating window
     usage for claude_code/DSH/pi.
-13. `context_usage.py:811`, `:1148`, `:383`, `:1028` — the compaction chip
+10. `context_usage.py:811`, `:1148`, `:383`, `:1028` — the compaction chip
     counts raw un-coalesced events while the chart coalesces them; inferred
     `occupancy_drop` compactions are ignored when choosing the window start;
     the splice reads its own appended artifacts for the second and later
     cliffs; a zero-usage final turn zeroes the whole composition panel.
-14. `cursor.py:263` — `chars/4` token estimates are written into `token_usage`
+11. `cursor.py:263` — `chars/4` token estimates are written into `token_usage`
     and shown as measured API usage. The `_capabilities` flags that mark them
     as estimates (written by `cursor.py`, `icode.py`, `dsh.py`) have **no
     consumer anywhere**.
-15. `report.py:151` — `write_report_file` opens the destination with no guard,
+12. `report.py:151` — `write_report_file` opens the destination with no guard,
     and `:176-179` derives the report name from the basename stem, so two
     trajectories sharing a task stem silently overwrite each other's report.
-16. `charts/swimlanes.py:274` — `build_tool_outcome_timeline` is the last
+13. `charts/swimlanes.py:274` — `build_tool_outcome_timeline` is the last
     consumer classifying tool outcomes with its own inline predicate instead of
     the shared `tool_failure.tool_call_failed`, so the timeline disagrees with
     every other surface about which calls failed.
-17. `charts/usage.py:490` — the Tool Call Duration chart plots the **sum** of
+14. `charts/usage.py:490` — the Tool Call Duration chart plots the **sum** of
     per-call durations while the "Tool time" chip directly above it reports the
     union, so the two contradict each other on parallel calls.
-18. `shell_cmd.py:510` — `return base or interpreter` emits `-` as a command
+15. `shell_cmd.py:510` — `return base or interpreter` emits `-` as a command
     label for certain shell forms.
-19. `presenters/workflow.py:44`/`:105` — role filtering drops steps whose label
+16. `presenters/workflow.py:44`/`:105` — role filtering drops steps whose label
     set does not intersect the filter, including steps that should match.
-20. `presenters/overview.py:352` — the summary banner is computed but never
+17. `presenters/overview.py:352` — the summary banner is computed but never
     rendered, dropping both the loaded filename and main's OpenCode/CodeArts
     "Cache Read is a running conversation prefix" caveat.
-21. `llm_config.py:38` — `load_env_files()` runs as the first statement of
+18. `llm_config.py:38` — `load_env_files()` runs as the first statement of
     `build_ui()` and injects every key from the launch directory's `.env`,
     including `AWE_DECAF_PATH` (arbitrary code import into the attribution
     backend).
-22. `issue_judge.py:263` / `overview_tab.py:471` — judge failure renders the raw
+19. `issue_judge.py:263` / `overview_tab.py:471` — judge failure renders the raw
     exception, including the endpoint URL and any credential in it, into the
     Issues HTML, bypassing the module's own scrubbing helper.
-23. `report.py:34` — `_PLOTLY_CDN = "cdn"`, so the "standalone" report pings
+20. `report.py:34` — `_PLOTLY_CDN = "cdn"`, so the "standalone" report pings
     `cdn.plot.ly` when opened. (Note: the inline plotly bundle also contains
     one `cdn.plot.ly` occurrence — its `topojsonURL` default — so a naive
     string count does not distinguish the two.)
-24. `issue_judge.py:210` — LLM output is hard-coded to Simplified Chinese and
+21. `issue_judge.py:210` — LLM output is hard-coded to Simplified Chinese and
     renders into the otherwise-English dashboard with no setting.
-25. `ui/upload.py:109-117` — process-global export scratch dir: one viewer's
+22. `ui/upload.py:109-117` — process-global export scratch dir: one viewer's
     load can delete another viewer's armed download.
-26. `run_group.py:131`/`:239`/`:663` — `_unify_path_keys` merges different files
+23. `run_group.py:131`/`:239`/`:663` — `_unify_path_keys` merges different files
     when one path is a suffix of the other; run identity is a bare basename, so
     comparing one instance across harnesses yields unattributable `X` / `X-2`
     columns. `:765-790` `_best_worst_flags` ranks incomparable columns.
-27. `formats/parse.py:21` — `splitlines(keepends=True)` also splits on U+2028,
+24. `formats/parse.py:21` — `splitlines(keepends=True)` also splits on U+2028,
     U+2029 and U+0085, so a rollout containing those characters fails to load.
     Bare `NaN`/`Infinity` JSON literals pass with no `_error` (no
     `parse_constant`) and crash downstream at `metrics.py:569`.
-28. `converge/cli.py:237` — advertises `prog="trajectory-converge"`, a console
+25. `converge/cli.py:237` — advertises `prog="trajectory-converge"`, a console
     script `pyproject.toml` does not define, while `python -m trajviz.converge`
     launches the Gradio app instead. The CLI is only reachable as
     `python -m trajviz.converge.cli` and is 3.5% covered.
-29. `batch.build_batch_report` — `per_task` drops `compared_format` and
+26. `batch.build_batch_report` — `per_task` drops `compared_format` and
     `confidence`, so batch output is strictly less informative than the
     pairwise report about whether a comparison was trustworthy.
-30. `sniff.py:94` — an `_chrys_export.format` marker alone claims a file as
+27. `sniff.py:94` — an `_chrys_export.format` marker alone claims a file as
     ICode with no structural validation.
-31. `tests/test_workflow_detail_ui.py:66`/`:71`, `tests/test_workflow_filtering.py`
+28. `tests/test_workflow_detail_ui.py:66`/`:71`, `tests/test_workflow_filtering.py`
     — three tests read `trajviz/insight/styles.py` through a cwd-relative path
     and fail whenever pytest is launched from outside the repo root.
-32. `tests/test_dsh_loader.py:885`, `tests/test_spawn_subagent_annotation.py:36`
+29. `tests/test_dsh_loader.py:885`, `tests/test_spawn_subagent_annotation.py:36`
     — the two remaining skips point at absolute paths outside the repo (one a
     developer home directory), so they can never run in CI.
 
@@ -281,7 +333,7 @@ main on 1,599/2,500 files, median +20.9%, max +234%) was fixed by `ff1c7e8`.
 
 Also still open from the pre-merge review:
 
-33. `context_usage.py:167`/`:170` — `_agent_pressure_label` crashes on a
+30. `context_usage.py:167`/`:170` — `_agent_pressure_label` crashes on a
     non-string agent value and breaks on the first id match, degrading a named
     session to a raw `ses_…` prefix.
 
