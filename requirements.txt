@@ -1,0 +1,9 @@
+# Runtime dependencies for trajviz (dashboard + scripts).
+# Mirrors [project.dependencies] in pyproject.toml.
+# Equivalent to `pip install -e .`.
+
+gradio>=6.14.0
+plotly>=5.0
+pygments>=2.0
+pandas>=2.0
+requests>=2.0    # used by scripts/step_labeler.py

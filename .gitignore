@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.pyright/
+.pyre/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Project-specific
+# Local notes and review records: never published.
+docs/
+gradio_cached_examples/
+*.log
+*.db
+.env
+.env.local
+
+# Trajectory data (keep small samples, ignore large dumps)
+data/
+# ...but DO track the small, hermetic DECAF-attribution test fixture, whose
+# reference data lives under the `data/` subdir DECAF's layout requires.
+!tests/fixtures/reference/data/
+!tests/fixtures/reference/data/**
+*.trajectory.json.gz
+example_data
+.hypothesis/

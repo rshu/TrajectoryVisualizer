@@ -1,0 +1,104 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trajviz"
+version = "1.0.0"
+description = "Offline analytics & visualization for LLM agent trajectories (Claude Code, Cursor, OpenCode, CodeArts, ICode, Codex CLI, Pi, DeepSeek Harness)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Rui Shu" }]
+keywords = ["llm", "agent", "trajectory", "visualization", "analytics", "gradio", "plotly"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "gradio>=6.14.0",
+    "plotly>=5.0",
+    "pygments>=2.0",
+    "pandas>=2.0",
+    "requests>=2.0",
+]
+
+[project.optional-dependencies]
+# Test runner (used by tests/, previously undeclared). Run under Python >=3.11.
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.16",
+    # Property-based tests for the ingest contract (tests/test_ingest_robustness.py).
+    # Must stay declared: CI installs with `uv sync --locked --extra dev`, so an
+    # undeclared import here is a collection error, not a skip.
+    "hypothesis>=6.0",
+]
+# NOTE (Attribution tab): the DECAF failure-attribution integration imports the
+# `awe` package from a DECAF checkout. DECAF is stdlib-only and not published to
+# PyPI, so there is intentionally NO pip extra for it — install is: clone DECAF
+# and set AWE_DECAF_PATH (default: a sibling ../DECAF checkout). See README
+# "Failure attribution (DECAF)" and docs/decaf-integration-plan.md.
+
+[project.scripts]
+trajviz = "trajviz.insight.__main__:main"
+# cli.py already advertises prog="trajectory-converge" in its --help/usage text;
+# without this entry that name existed nowhere and the CLI was reachable only as
+# `python -m trajviz.converge.cli` (C8). `python -m trajviz.converge` launches
+# the Gradio app and must keep doing so.
+trajectory-converge = "trajviz.converge.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rshu/TrajectoryVisualizer"
+Repository = "https://github.com/rshu/TrajectoryVisualizer"
+Issues = "https://github.com/rshu/TrajectoryVisualizer/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["trajviz"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM"]
+ignore = [
+    # Long lines inside HTML/CSS/JS template strings dominate the UI modules;
+    # E501 stays advisory there. Code lines are kept within 120 by review.
+    "E501",
+    # Nested if/with collapses and ternary rewrites often hurt readability in
+    # the step-normalization code; applied case-by-case instead of enforced.
+    "SIM102", "SIM105", "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts keep their import-after-sys.path-dance layout.
+"scripts/*" = ["E402"]
+"tests/*" = ["E402"]
+
+# The presence of this table is load-bearing, independent of its contents: it
+# makes THIS file pytest's inifile, which pins rootdir to this repository. A
+# checkout nested inside another project whose pyproject.toml carries
+# [tool.pytest.ini_options] would otherwise have pytest walk up, resolve rootdir
+# to that parent and inherit its settings (unknown plugin options become
+# warnings, and a bare `pytest` collects the parent's `testpaths` instead of
+# ours).
+#
+# `pythonpath` declares the one thing the suite has always needed and never
+# stated: the repo root on sys.path, because four test modules import `scripts`
+# (`from scripts import step_labeler`, ...) and `scripts` is NOT part of the wheel
+# (see [tool.hatch.build.targets.wheel]). Until now that path arrived by accident
+# from three undeclared sources — hatchling's editable .pth, `python -m pytest`
+# inserting the CWD, and a PYTHONPATH env var in both workflows (since removed).
+# Entries resolve against rootdir, so this works from any CWD and any install mode.
+# No `addopts`: it would change CI log shape for no gain.
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["."]

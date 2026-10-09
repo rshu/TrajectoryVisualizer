@@ -1,0 +1,74 @@
+name: DECAF integration (trusted)
+
+# Runs the DECAF failure-attribution integration tests against a DECAF checkout.
+# Not a pull_request workflow, and guarded to main: the DECAF checkout needs a
+# credential, so no branch-controlled code (install hooks, tests, or this file
+# from a branch) may run alongside it. workflow_dispatch from a non-main ref
+# no-ops via the job-level guard below.
+#
+# Configuration:
+#   vars.DECAF_REPO          — owner/name of the repository carrying DECAF/awe.
+#   secrets.DECAF_REPO_TOKEN — a read-only fine-grained token for it.
+# Until both are set the job fails at its preflight below, and the DECAF-gated
+# tests skip in `CI / standalone`. TRAJVIZ_REQUIRE_ATTRIBUTION=1 turns a missing
+# environment into a hard failure, so this workflow is never green by skipping.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    # Trusted main code ONLY — a dispatch from any other ref runs nothing.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      # Fail here, not at actions/checkout. Without this, missing configuration
+      # surfaces as "Input required and not supplied: token" on a step whose name
+      # mentions DECAF, which reads like a broken pin rather than an unconfigured
+      # repository. A step-level `if:` cannot see the `secrets` context, so both
+      # values are mapped into env and tested in the shell instead.
+      - name: Preflight — DECAF_REPO and DECAF_REPO_TOKEN must be configured
+        env:
+          REPO: ${{ vars.DECAF_REPO }}
+          TOK: ${{ secrets.DECAF_REPO_TOKEN }}
+        run: |
+          missing=""
+          [ -z "$REPO" ] && missing="$missing vars.DECAF_REPO"
+          [ -z "$TOK" ] && missing="$missing secrets.DECAF_REPO_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error title=DECAF integration is not configured::Not set:$missing. Set vars.DECAF_REPO to the owner/name of the repository carrying DECAF/awe and secrets.DECAF_REPO_TOKEN to a read-only token for it. Deliberately a hard failure: a green run here must mean the integration tests executed."
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check out DECAF (pinned)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ vars.DECAF_REPO }}
+          token: ${{ secrets.DECAF_REPO_TOKEN }}
+          path: _decaf_src
+          sparse-checkout: DECAF
+          persist-credentials: false
+          # DECAF v0.34: evidence schema 20 and the test_expectation_rewritten
+          # fault type. The vendored verdicts in tests/fixtures/decaf_cache are
+          # stamped schema 20 and the golden fault sets pin the v0.34 taxonomy, so
+          # an older DECAF fails those tests as if DECAF had drifted. Bump this
+          # together with the fixtures, never on its own.
+          ref: 4e834bc60fbafb064f77e4a903c6f16949b5a708
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
+      # No PYTHONPATH: the repo root now reaches sys.path through
+      # `pythonpath = ["."]` in [tool.pytest.ini_options], which is declared,
+      # rootdir-relative and identical locally and in CI.
+      - name: Test (integration — DECAF present, no silent skips)
+        env:
+          AWE_DECAF_PATH: ${{ github.workspace }}/_decaf_src/DECAF
+          TRAJVIZ_REQUIRE_ATTRIBUTION: "1"
+        run: uv run python -m pytest tests -q

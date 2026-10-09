@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**", "refactor/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Proves TrajViz works WITHOUT DECAF (standalone): the core suite plus the
+  # fixture-hygiene and no-DECAF render/degradation checks. The attribution
+  # module's tests skip here by design (module-level skipif: no `awe`).
+  #
+  # This is the ONLY workflow that runs on pull_request: the DECAF integration
+  # needs a credentialed checkout, which must never coexist with PR-controlled
+  # code (see integration.yml — trusted main only).
+  standalone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
+      - name: Lint (ruff)
+        run: uv run ruff check trajviz scripts tests
+      # No PYTHONPATH: the repo root now reaches sys.path through
+      # `pythonpath = ["."]` in [tool.pytest.ini_options], which is declared,
+      # rootdir-relative and identical locally and in CI (it also pins rootdir to
+      # this repo instead of any surrounding tree).
+      - name: Test (standalone — DECAF absent)
+        run: uv run python -m pytest tests -q
+
+  # Coverage is reported, not assumed. Separate job so a coverage dip reads
+  # differently from a test failure, and so the `standalone` log keeps its shape.
+  #
+  # This measures the STANDALONE figure: the DECAF-gated attribution tests skip
+  # here, so it is a floor on the real number, not the number a DECAF-present run
+  # would print. `fail-under` is a collapse detector set deliberately below the
+  # measured value — raise it to just under the first green run's TOTAL rather
+  # than to whatever a review doc once claimed.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
+      # `uv run --with` layers coverage over the locked environment instead of
+      # adding it to the dev extra: `uv sync --locked` above stays the single
+      # source of what is installed, and no lockfile churn is needed to measure.
+      # The settings live on the command line, not in a [tool.coverage] table, so
+      # the job log states exactly what was measured and the line can be pasted
+      # verbatim to reproduce it.
+      - name: Measure coverage (standalone — DECAF absent)
+        run: >
+          uv run --with "coverage>=7.16" coverage run
+          --branch --source=trajviz,scripts -m pytest tests -q
+      - name: Report coverage
+        run: |
+          uv run --with "coverage>=7.16" coverage report --precision=1 --show-missing --fail-under=70
+          uv run --with "coverage>=7.16" coverage html
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 14

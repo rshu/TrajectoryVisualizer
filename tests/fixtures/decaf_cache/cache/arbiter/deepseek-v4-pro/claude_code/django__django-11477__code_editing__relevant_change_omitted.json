@@ -1,0 +1,28 @@
+{
+  "instance_id": "django__django-11477",
+  "agent": "claude_code",
+  "claim": "code_editing::relevant_change_omitted",
+  "model": "deepseek-v4-pro",
+  "verdict": {
+    "support": "refute",
+    "confidence": "medium",
+    "evidence_steps": [
+      35,
+      49,
+      56,
+      57
+    ],
+    "rationale": "Agent stated applying fix at [35], ran tests at [49][56], and verified final state [57], contradicting claim that file was never edited."
+  },
+  "usage": {
+    "prompt_tokens": 3182,
+    "completion_tokens": 6739,
+    "total_tokens": 9921,
+    "cost": 0
+  },
+  "finish_reason": "stop",
+  "prompt_version": "f7f11661e443",
+  "evidence_schema": 20,
+  "trajectory_sha256": "0b81557bd9949555ad852891a8b97aa7fa78757bb6c3ed1b388cd506d16f14c9",
+  "requirements_sha256": "68188191ed96472c43e458f096276fb72297709bf580b6976b8206270ce0570c"
+}

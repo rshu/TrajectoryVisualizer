@@ -1,0 +1,335 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "app_version": "0.15.0",
+    "os_name": "linux",
+    "arch": "amd64",
+    "model_provider": "openai",
+    "model_api_style": "chat_completions",
+    "model_id": "test-model",
+    "session_id": "session-main-0001",
+    "agent_profile": "Code",
+    "agent_display_name": "Code Agent",
+    "created_at": "2026-09-09T04:00:00.000000+00:00",
+    "updated_at": "2026-09-09T04:06:00.000000+00:00",
+    "message_count": 9,
+    "primary_cwd": "/home/user/proj",
+    "generated_title": "ICode minimal fixture"
+  },
+  "state": {
+    "turn_counter": 2,
+    "total_session_tokens": 1200,
+    "total_session_input_tokens": 1000,
+    "total_session_output_tokens": 200,
+    "messages": [
+      {
+        "type": "message",
+        "role": "user",
+        "contents": [
+          {
+            "type": "text",
+            "text": "Find the lanczos caller file in this repository.",
+            "additional_properties": {}
+          }
+        ],
+        "message_id": "msg_0",
+        "additional_properties": {
+          "_chrys_created_at": "2026-09-09T04:00:00.000000+00:00",
+          "_group": {"id": "group_msg_0", "kind": "user", "index": 0, "has_reasoning": false, "token_count": 100}
+        }
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "contents": [
+          {"type": "text", "text": "Let me search for it.", "additional_properties": {}},
+          {
+            "type": "function_call",
+            "call_id": "call-glob-1",
+            "name": "glob",
+            "arguments": "{\"pattern\": \"**/lanczos_caller.cpp\"}",
+            "additional_properties": {"_chrys_tool_kind": "search"}
+          }
+        ],
+        "author_name": "Chrys",
+        "message_id": "chatcmpl-0001",
+        "additional_properties": {
+          "_chrys_created_at": "2026-09-09T04:01:00.000000+00:00",
+          "_group": {"id": "group_chatcmpl-0001", "kind": "tool_call", "index": 1, "has_reasoning": false, "token_count": 40}
+        }
+      },
+      {
+        "type": "message",
+        "role": "tool",
+        "contents": [
+          {
+            "type": "function_result",
+            "call_id": "call-glob-1",
+            "result": "Found 1 file(s) matching '**/lanczos_caller.cpp'\n  MultimediaAlgo/lanczos/lanczos_caller.cpp",
+            "items": [],
+            "additional_properties": {}
+          }
+        ],
+        "author_name": "Chrys",
+        "message_id": "msg_2",
+        "additional_properties": {
+          "_group": {"id": "group_chatcmpl-0001", "kind": "tool_call", "index": 1, "has_reasoning": false, "token_count": 20}
+        }
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "contents": [
+          {"type": "text", "text": "Now run a shell command.", "additional_properties": {}},
+          {
+            "type": "function_call",
+            "call_id": "call-sh-1",
+            "name": "sh",
+            "arguments": "",
+            "additional_properties": {"_chrys_tool_kind": "shell"}
+          },
+          {"type": "text", "text": ".", "additional_properties": {}},
+          {
+            "type": "function_call",
+            "call_id": "",
+            "name": "",
+            "arguments": "{\"command\": \"ls\"}",
+            "additional_properties": {}
+          }
+        ],
+        "author_name": "Chrys",
+        "message_id": "chatcmpl-0002",
+        "additional_properties": {
+          "_chrys_created_at": "2026-09-09T04:02:00.000000+00:00",
+          "_group": {"id": "group_chatcmpl-0002", "kind": "tool_call", "index": 2, "has_reasoning": false, "token_count": 30}
+        }
+      },
+      {
+        "type": "message",
+        "role": "tool",
+        "contents": [
+          {
+            "type": "function_result",
+            "call_id": "call-sh-1",
+            "exception": "1 validation error for execute_input\ncommand\n  Field required",
+            "result": "Error: Argument parsing failed.",
+            "items": [],
+            "additional_properties": {
+              "failed": true,
+              "tool_error_kind": "argument_parsing",
+              "tool_error_message": "Argument parsing failed.",
+              "_chrys_tool_result_metadata": {"shell_exit_code": 0}
+            }
+          },
+          {
+            "type": "function_result",
+            "call_id": "",
+            "exception": "'Function \"\" not found.'",
+            "result": "Error: Requested function \"\" not found.",
+            "items": [],
+            "additional_properties": {
+              "failed": true,
+              "tool_error_kind": "tool_not_found",
+              "tool_error_message": "Requested function \"\" not found."
+            }
+          }
+        ],
+        "author_name": "Chrys",
+        "message_id": "msg_4",
+        "additional_properties": {
+          "_group": {"id": "group_chatcmpl-0002", "kind": "tool_call", "index": 2, "has_reasoning": false, "token_count": 25}
+        }
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "contents": [
+          {"type": "text", "text": "Delegating a deeper look to an explore agent.", "additional_properties": {}},
+          {
+            "type": "function_call",
+            "call_id": "call-spawn-1",
+            "name": "explore_agent",
+            "arguments": "{\"prompt\": \"Explore the lanczos implementation\"}",
+            "additional_properties": {"_chrys_tool_kind": "sub_agent"}
+          }
+        ],
+        "author_name": "Chrys",
+        "message_id": "chatcmpl-0003",
+        "additional_properties": {
+          "_chrys_created_at": "2026-09-09T04:03:00.000000+00:00",
+          "_group": {"id": "group_chatcmpl-0003", "kind": "tool_call", "index": 3, "has_reasoning": false, "token_count": 50}
+        }
+      },
+      {
+        "type": "message",
+        "role": "tool",
+        "contents": [
+          {
+            "type": "function_result",
+            "call_id": "call-spawn-1",
+            "result": "Explore done. See the sub-agent session.",
+            "items": [],
+            "additional_properties": {
+              "_chrys_tool_result_metadata": {
+                "sub_agent_invocation_id": "inv-0001",
+                "sub_agent_log_file": "explore_agent_inv-0001.json",
+                "failed": false
+              }
+            }
+          }
+        ],
+        "author_name": "Chrys",
+        "message_id": "msg_6",
+        "additional_properties": {
+          "_group": {"id": "group_chatcmpl-0003", "kind": "tool_call", "index": 3, "has_reasoning": false, "token_count": 60}
+        }
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "contents": [
+          {"type": "text", "text": "Here is the summary of the lanczos implementation.", "additional_properties": {}}
+        ],
+        "author_name": "Chrys",
+        "message_id": "chatcmpl-0004",
+        "additional_properties": {
+          "_chrys_created_at": "2026-09-09T04:05:00.000000+00:00",
+          "_group": {"id": "group_chatcmpl-0004", "kind": "assistant_text", "index": 4, "has_reasoning": false, "token_count": 70}
+        }
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "contents": [
+          {"type": "text", "text": "", "additional_properties": {}}
+        ],
+        "author_name": "Chrys",
+        "message_id": "chatcmpl-0005",
+        "additional_properties": {"_chrys_kind": "turn", "_turn_id": "turn_2", "_turn": 2}
+      }
+    ],
+    "compressed_msgs": []
+  },
+  "_chrys_export": {
+    "format": "chrys-expanded-session-v1",
+    "created_at": "2026-09-12T02:00:19.419729+00:00",
+    "producer": {"name": "chrys-manager", "version": "0.9.10"},
+    "source_session_id": "session-main-0001",
+    "complete_relative_to_persisted_data": true,
+    "compressed_contexts": [
+      {
+        "context_id": "ctx_1",
+        "summary_text": "User: Find the lanczos caller file; Tools: glob",
+        "message_start": 0,
+        "message_end": 2
+      }
+    ]
+  },
+  "_chrys_sub_agent_sessions": [
+    {
+      "meta": {
+        "schema_version": 1,
+        "record_type": "sub_agent_session",
+        "parent_session_id": "session-main-0001",
+        "parent_event_call_id": "evt-0001",
+        "parent_provider_call_id": "call-spawn-1",
+        "invocation_id": "inv-0001",
+        "tool_name": "explore_agent",
+        "agent_profile": "Explore",
+        "agent_display_name": "Explore Agent",
+        "status": "completed",
+        "failure_reason": "",
+        "last_error": "",
+        "created_at": "2026-09-09T04:03:10.000000+00:00",
+        "updated_at": "2026-09-09T04:04:00.000000+00:00",
+        "ended_at": "2026-09-09T04:04:00.000000+00:00",
+        "prompt_preview": "Explore the lanczos implementation",
+        "message_count": 4,
+        "tool_call_count": 1,
+        "total_tokens": 150,
+        "primary_cwd": "/home/user/proj",
+        "model_provider": "openai",
+        "model_api_style": "chat_completions",
+        "model_id": "test-model"
+      },
+      "state": {
+        "turn_counter": 1,
+        "messages": [
+          {
+            "type": "message",
+            "role": "user",
+            "contents": [
+              {
+                "type": "text",
+                "text": "Explore the lanczos implementation",
+                "additional_properties": {}
+              }
+            ],
+            "message_id": "sub_msg_0",
+            "additional_properties": {
+              "_chrys_created_at": "2026-09-09T04:03:10.000000+00:00",
+              "_group": {"id": "sub_group_msg_0", "kind": "user", "index": 0, "has_reasoning": false, "token_count": 80}
+            }
+          },
+          {
+            "type": "message",
+            "role": "assistant",
+            "contents": [
+              {
+                "type": "function_call",
+                "call_id": "call-sub-1",
+                "name": "grep",
+                "arguments": "{\"pattern\": \"lanczos\", \"path\": \"src\"}",
+                "additional_properties": {"_chrys_tool_kind": "search"}
+              }
+            ],
+            "author_name": "Chrys",
+            "message_id": "sub_chatcmpl-0001",
+            "additional_properties": {
+              "_chrys_created_at": "2026-09-09T04:03:20.000000+00:00",
+              "_group": {"id": "sub_group_chatcmpl-0001", "kind": "tool_call", "index": 1, "has_reasoning": false, "token_count": 30}
+            }
+          },
+          {
+            "type": "message",
+            "role": "tool",
+            "contents": [
+              {
+                "type": "function_result",
+                "call_id": "call-sub-1",
+                "result": "src/lanczos.cpp:1: lanczos kernel",
+                "items": [],
+                "additional_properties": {}
+              }
+            ],
+            "author_name": "Chrys",
+            "message_id": "sub_msg_2",
+            "additional_properties": {
+              "_group": {"id": "sub_group_chatcmpl-0001", "kind": "tool_call", "index": 1, "has_reasoning": false, "token_count": 15}
+            }
+          },
+          {
+            "type": "message",
+            "role": "assistant",
+            "contents": [
+              {"type": "text", "text": "Investigation complete.", "additional_properties": {}}
+            ],
+            "author_name": "Chrys",
+            "message_id": "sub_chatcmpl-0002",
+            "additional_properties": {
+              "_chrys_created_at": "2026-09-09T04:03:50.000000+00:00",
+              "_group": {"id": "sub_group_chatcmpl-0002", "kind": "assistant_text", "index": 2, "has_reasoning": false, "token_count": 40}
+            }
+          }
+        ],
+        "compressed_msgs": []
+      },
+      "_chrys_export": {
+        "format": "chrys-expanded-session-v1",
+        "created_at": "2026-09-12T02:00:19.419729+00:00",
+        "producer": {"name": "chrys-manager", "version": "0.9.10"},
+        "source_session_id": "session-main-0001"
+      }
+    }
+  ]
+}

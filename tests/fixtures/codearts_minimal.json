@@ -1,0 +1,173 @@
+{
+  "info": {
+    "id": "ses_root",
+    "slug": "root-session",
+    "directory": "C:\\workspace\\demo",
+    "title": "CodeArts fixture",
+    "version": "2.0-test",
+    "summary": {"additions": 0, "deletions": 0, "files": 0},
+    "time": {"created": 1000, "updated": 5000}
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {"created": 1000},
+        "agent": "build",
+        "model": {"providerID": "test-provider", "modelID": "test-model"},
+        "id": "msg_user",
+        "sessionID": "ses_root"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Inspect the project",
+          "metadata": {"isUserInput": true},
+          "id": "part_user",
+          "sessionID": "ses_root",
+          "messageID": "msg_user"
+        },
+        {
+          "type": "text",
+          "text": "synthetic reminder",
+          "synthetic": true,
+          "id": "part_synthetic",
+          "sessionID": "ses_root",
+          "messageID": "msg_user"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {"created": 1500, "completed": 3000},
+        "agent": "build",
+        "id": "msg_root_assistant",
+        "sessionID": "ses_root",
+        "parentID": "msg_user",
+        "modelID": "test-model",
+        "providerID": "test-provider",
+        "finish": "tool-calls",
+        "tokens": {
+          "total": 100,
+          "input": 50,
+          "output": 20,
+          "reasoning": 10,
+          "cache": {"read": 20, "write": 0}
+        }
+      },
+      "parts": [
+        {
+          "type": "reasoning",
+          "text": "Delegate inspection",
+          "time": {"start": 1500, "end": 1600},
+          "id": "part_reasoning",
+          "sessionID": "ses_root",
+          "messageID": "msg_root_assistant"
+        },
+        {
+          "type": "tool",
+          "tool": "task",
+          "callID": "call_task",
+          "state": {
+            "status": "completed",
+            "input": {"subagent_type": "explore"},
+            "output": "task_id: ses_child",
+            "metadata": {"sessionId": "ses_child", "totalDurationMs": 500},
+            "title": "Explore",
+            "time": {"start": 1600, "end": 2100}
+          },
+          "id": "part_task",
+          "sessionID": "ses_root",
+          "messageID": "msg_root_assistant"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {"created": 2200, "completed": 4000},
+        "agent": "explore",
+        "id": "msg_child",
+        "sessionID": "ses_child",
+        "parentID": "msg_child_user",
+        "parentSessionID": "ses_root",
+        "sessionDepth": 1,
+        "sessionTitle": "Explorer",
+        "isSubAgent": true,
+        "modelID": "test-model",
+        "providerID": "test-provider",
+        "finish": "stop",
+        "tokens": {
+          "total": 50,
+          "input": 20,
+          "output": 10,
+          "reasoning": 5,
+          "cache": {"read": 15, "write": 0}
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Inspection complete",
+          "time": {"start": 3000, "end": 3900},
+          "id": "part_child_text",
+          "sessionID": "ses_child",
+          "messageID": "msg_child"
+        },
+        {
+          "type": "step-finish",
+          "reason": "stop",
+          "tokens": {
+            "total": 50,
+            "input": 20,
+            "output": 10,
+            "reasoning": 5,
+            "cache": {"read": 15, "write": 0}
+          },
+          "cost": 0,
+          "id": "part_child_finish",
+          "sessionID": "ses_child",
+          "messageID": "msg_child"
+        }
+      ]
+    }
+  ],
+  "session_manifest": [
+    {
+      "depth": 0,
+      "discovered_by": "root",
+      "traversal_parent_id": null,
+      "message_count": 2,
+      "info": {"id": "ses_root", "parentID": null, "title": "Root"}
+    },
+    {
+      "depth": 1,
+      "discovered_by": "parent_id+tool_metadata",
+      "traversal_parent_id": "ses_root",
+      "message_count": 1,
+      "info": {"id": "ses_child", "parentID": "ses_root", "title": "Explorer"}
+    }
+  ],
+  "statistics": {
+    "sessions": 2,
+    "subagent_sessions": 1,
+    "total_messages": 3,
+    "user_messages": 1,
+    "assistant_messages": 2,
+    "total_parts": 6,
+    "tool_parts": 1,
+    "reasoning_parts": 1,
+    "event_rows": 0
+  },
+  "export_metadata": {
+    "schema_version": 2,
+    "source_format": "codearts_opencode_sqlite",
+    "source_database": "opencode.db",
+    "root_session_id": "ses_root",
+    "generated_at": "2026-07-20T00:00:00+00:00",
+    "token_policy": "preserved",
+    "complete": true,
+    "warnings": []
+  }
+}
